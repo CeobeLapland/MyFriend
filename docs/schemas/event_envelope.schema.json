@@ -1,0 +1,16 @@
+{
+  "备注": "这个只是预设示例，随时可以根据项目进展进行增删修改，不比拘泥于固定格式",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "EventEnvelope",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "event_id": {"type": "string"},
+    "type": {"type": "string"},
+    "version": {"type": "integer", "minimum": 1},
+    "occurred_at": {"type": "string", "format": "date-time"},
+    "correlation_id": {"type": "string"},
+    "payload": {"type": "object"}
+  },
+  "required": ["event_id", "type", "version", "occurred_at", "correlation_id", "payload"]
+}

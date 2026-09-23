@@ -1,0 +1,80 @@
+{
+  "备注": "这个只是预设示例，随时可以根据项目进展进行增删修改，不比拘泥于固定格式",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AssistantResponse",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "reply": {"type": "string"},
+    "emotion": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "primary": {"type": "string"},
+        "intensity": {"type": "number", "minimum": 0, "maximum": 1}
+      },
+      "required": ["primary", "intensity"]
+    },
+    "action": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "name": {"type": "string"},
+        "intensity": {"type": "number", "minimum": 0, "maximum": 1}
+      },
+      "required": ["name", "intensity"]
+    },
+    "voice": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "style": {"type": "string"},
+        "speed": {"type": "number", "minimum": 0.5, "maximum": 2.0},
+        "pitch": {"type": "number", "minimum": -1.0, "maximum": 1.0}
+      },
+      "required": ["style", "speed", "pitch"]
+    },
+    "memory_candidates": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "type": {"type": "string"},
+          "content": {"type": "string"},
+          "importance": {"type": "number", "minimum": 0, "maximum": 1},
+          "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+          "expires_in_days": {"type": ["integer", "null"], "minimum": 0}
+        },
+        "required": ["type", "content", "importance", "confidence", "expires_in_days"]
+      }
+    },
+    "state_delta": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "happiness": {"type": "number", "minimum": -0.2, "maximum": 0.2},
+        "energy": {"type": "number", "minimum": -0.2, "maximum": 0.2},
+        "curiosity": {"type": "number", "minimum": -0.2, "maximum": 0.2},
+        "social_need": {"type": "number", "minimum": -0.2, "maximum": 0.2},
+        "stress": {"type": "number", "minimum": -0.2, "maximum": 0.2},
+        "embarrassment": {"type": "number", "minimum": -0.2, "maximum": 0.2},
+        "excitement": {"type": "number", "minimum": -0.2, "maximum": 0.2}
+      },
+      "required": ["happiness", "energy", "curiosity", "social_need", "stress", "embarrassment", "excitement"]
+    },
+    "tool_calls": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "name": {"type": "string"},
+          "arguments": {"type": "object"}
+        },
+        "required": ["name", "arguments"]
+      }
+    }
+  },
+  "required": ["reply", "emotion", "action", "voice", "memory_candidates", "state_delta", "tool_calls"]
+}
