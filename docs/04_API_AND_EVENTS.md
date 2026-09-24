@@ -60,11 +60,102 @@ HTTP 负责 request/response；WebSocket 负责实时事件流。
 ```json
 {
   "turn_id": "...",
+  "conversation_id": "...",
   "status": "accepted"
 }
 ```
 
 实际结果通过 WebSocket 推送。
+
+> `conversation_id` 是响应体里的补充字段：请求里带了它而响应不给回来，客户端
+> 就无从续话。见 `decisions/0016-m1-protocol-additions.md`。
+
+### POST /v1/chat/turns
+
+**同步**跑完整个 turn，直接返回完整结构化响应。用于调试、脚本化验收，以及
+不需要实时事件流的客户端。
+
+请求：
+
+```json
+{
+  "content": "你好，今天陪我聊聊天吧。",
+  "conversation_id": null,
+  "input_type": "text"
+}
+```
+
+返回（HTTP 状态码**恒为 200**）：
+
+```json
+{
+  "turn_id": "...",
+  "conversation_id": "...",
+  "status": "ok",
+  "reply": "好啊，正好我也刚想找个话题聊聊。",
+  "response": {
+    "reply": "...",
+    "emotion": {"primary": "happy", "intensity": 0.72},
+    "action": {"name": "nod", "intensity": 0.65},
+    "voice": {"style": "warm", "speed": 1.1, "pitch": -0.2}
+  },
+  "failure": null,
+  "model": "qwen/qwen3.5-9b",
+  "retries": 0,
+  "degraded": false,
+  "timings": {"total_ms": 8900.0, "llm_ms": 8888.0}
+}
+```
+
+LLM 不可用时同样是 200，但 `status` 为 `failed`、`failure.code` 给出稳定错误码、
+`reply` 是一句诚实的中文：
+
+```json
+{
+  "status": "failed",
+  "reply": "我这边的模型服务连不上了。你确认一下 LM Studio 在运行，然后再说一次好吗？",
+  "failure": {"code": "llm_unavailable", "message": "...", "recoverable": true}
+}
+```
+
+### GET /v1/config
+
+返回非敏感运行配置与**协议词表**：
+
+```json
+{
+  "companion_id": "astra",
+  "user_id": "local",
+  "llm_provider": "lmstudio",
+  "llm_model": "qwen/qwen3.5-9b",
+  "stt_provider": "none",
+  "tts_provider": "none",
+  "avatar_enabled": false,
+  "emotions": ["angry", "embarrassed", "excited", "happy", "neutral", "sad", "sleepy", "surprised"],
+  "actions": ["idle", "laugh", "look_at_user", "look_away", "nod", "shake_head", "shy", "stretch", "think", "wave", "yawn"],
+  "voice_styles": ["calm", "cheerful", "excited", "gentle", "neutral", "playful", "serious", "warm"]
+}
+```
+
+词表必须从这里取——它是与 Unity 端的协议契约，代码侧有单一真相
+（`src/astra/domain/vocabulary.py`，见 `decisions/0015`）。
+
+### GET /v1/conversations/{conversation_id}/messages
+
+按 **id 升序**返回该会话的全部消息。未知会话返回 **404**。
+
+```json
+{
+  "conversation_id": "...",
+  "messages": [
+    {"id": "01J...", "conversation_id": "...", "turn_id": "...", "role": "user",
+     "content": "你好", "created_at": "2026-09-24T03:45:50+00:00", "metadata": {}}
+  ]
+}
+```
+
+> 排序用 `id` 而不是 `created_at`：本机时钟分辨率只有 15.625ms，同一 turn 的
+> 两条消息时间戳完全相同。见 `decisions/0012-id-and-identity-model.md`。
 
 ### GET /v1/memories
 
@@ -124,7 +215,15 @@ turn.completed
 - `conversation.message.created`
 - `turn.started`
 - `turn.completed`
+- `turn.failed`
 - `turn.interrupted`
+
+> `turn.failed` 是独立事件而不是 `turn.completed{status:"failed"}`：客户端普遍用
+> `turn.completed` 收尾 UI，让它收到失败状态会误导。命名与 `tool.failed` 对齐。
+
+### Protocol
+
+- `error.protocol` —— 客户端发来非法帧时回一条，**连接不关闭**（一个手滑不该掉会话）
 
 ### Memory
 

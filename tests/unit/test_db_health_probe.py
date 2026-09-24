@@ -10,7 +10,7 @@ import pytest
 from astra.domain.health import ComponentHealth, HealthStatus
 from astra.infrastructure.db.connection import open_connection
 from astra.infrastructure.db.health import DatabaseHealthProbe
-from astra.infrastructure.db.migrations import upgrade
+from astra.infrastructure.db.migrations import expected_version, upgrade
 
 
 @pytest.fixture
@@ -52,10 +52,12 @@ def test_migrated_database_is_ok(db_path: Path) -> None:
 
     result = _check(DatabaseHealthProbe(db_path))
 
+    latest = expected_version()
+    assert latest is not None
     assert result.status is HealthStatus.OK
     assert result.detail is not None
-    assert result.detail["schema_version"] == 1
-    assert result.detail["migration_version"] == "0001"
+    assert result.detail["schema_version"] == int(latest)
+    assert result.detail["migration_version"] == latest
     assert result.latency_ms is not None
     assert result.latency_ms >= 0.0
 

@@ -26,7 +26,16 @@ _EXPECTED_INDEXES = {
     "idx_memories_companion_type",
     "idx_memories_importance",
     "idx_messages_conversation_created",
+    "idx_messages_turn_role",
 }
+
+
+def _shipped_versions() -> list[str]:
+    """随仓库分发的迁移版本号，升序。
+
+    刻意从 ``discover()`` 推导而不是写死——新增迁移不应该让这些测试变红。
+    """
+    return [migration.version for migration in discover()]
 
 
 @pytest.fixture
@@ -51,7 +60,7 @@ def _write_migration(directory: Path, filename: str, sql: str) -> Path:
 
 
 def test_empty_db_initializes_from_scratch(db_path: Path) -> None:
-    assert upgrade(db_path) == ["0001"]
+    assert upgrade(db_path) == _shipped_versions()
 
     assert _names(db_path, "table") == _EXPECTED_TABLES
     assert _names(db_path, "index") >= _EXPECTED_INDEXES
@@ -75,12 +84,15 @@ def test_upgrade_creates_missing_parent_directory(tmp_path: Path) -> None:
 def test_upgrade_records_version(db_path: Path) -> None:
     upgrade(db_path)
 
+    latest = _shipped_versions()[-1]
     with open_connection(db_path) as conn:
-        assert current_version(conn) == "0001"
-        row = conn.execute("SELECT version, checksum, applied_at FROM schema_migrations").fetchone()
+        assert current_version(conn) == latest
+        row = conn.execute(
+            "SELECT version, checksum, applied_at FROM schema_migrations ORDER BY version DESC"
+        ).fetchone()
 
     assert row is not None
-    assert row["version"] == "0001"
+    assert row["version"] == latest
     assert len(row["checksum"]) == 64  # sha256 hexdigest
     assert row["applied_at"].endswith("+00:00")
 
@@ -99,7 +111,7 @@ def test_state_survives_reconnect(db_path: Path) -> None:
 
 
 def test_expected_version_matches_shipped_migrations() -> None:
-    assert expected_version() == "0001"
+    assert expected_version() == _shipped_versions()[-1]
 
 
 def test_shipped_migrations_are_valid() -> None:

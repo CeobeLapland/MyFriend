@@ -4,11 +4,14 @@ Local-first AI companion：长期记忆、稳定人格、实时语音、3D 形�
 
 本仓库是 **Astra** 的实现。规格文档在 [`docs/`](docs/)，Agent 执行规则见 [`AGENTS.md`](AGENTS.md)。
 
-当前进度：**M0 — 工程骨架**（能启动、能测试、数据库能从零建起）。
+当前进度：**M1a — 文本大脑**（`文字进 → LM Studio → 结构化回复出`，带持久化与降级）。
+M1b（事件总线 + WebSocket）待实现。
 
 ## 环境要求
 
-- **Python 3.12**（由 [`uv`](https://docs.astral.sh/uv/) 托管；**不要用系统的 3.14**，torch / funasr 等生态尚未适配）
+- **Python 3.12**（由 [`uv`](https://docs.astral.sh/uv/) 托管；**不要用系统的
+  3.14**，torch / funasr 等生态尚未适配）
+- **LM Studio** 并加载 `qwen/qwen3.5-9b`（或改 `ASTRA_LLM_MODEL`）
 - Windows / macOS / Linux
 
 `uv` 若不在 PATH，先补上（Windows）：
@@ -20,19 +23,40 @@ $env:PATH = "$env:USERPROFILE\.local\bin;$env:PATH"
 ## 快速开始
 
 ```powershell
-# 1. 安装依赖（含 dev 组）
+# 1. 安装依赖
 uv sync
 
 # 2. 生成本地配置
 Copy-Item .env.example .env
+# 编辑 .env，把 ASTRA_LLM_PROVIDER 改成 lmstudio
 
-# 3. 初始化数据库
+# 3. 启动 LM Studio 并加载 qwen/qwen3.5-9b（在 LM Studio 里点开 Developer → Start Server）
+
+# 4. 初始化数据库
 uv run astra migrate
 
-# 4. 启动服务
+# 5. 启动服务
 uv run astra serve
 # → http://127.0.0.1:8000/health
 ```
+
+## 跟她说句话
+
+```powershell
+$OutputEncoding = [System.Text.Encoding]::UTF8
+$body = '{"content":"你好，今天陪我聊聊天吧。"}'
+$r = Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/chat/turns `
+     -ContentType 'application/json; charset=utf-8' `
+     -Body ([Text.Encoding]::UTF8.GetBytes($body))
+$r.reply
+$r.response.emotion
+```
+
+`POST /v1/chat/turns` **同步**跑完一轮并返回完整结构化回复
+（`reply` / `emotion` / `action` / `voice`）。HTTP 状态码恒为 200：
+LLM 挂掉时 `status` 为 `failed`，`reply` 会是一句诚实的中文，而不是 5xx。
+
+`GET /v1/conversations/{id}/messages` 读历史，`GET /v1/config` 取配置与协议词表。
 
 ## 常用命令
 
@@ -45,58 +69,76 @@ uv run astra serve
 | `uv run ruff format --check .` | 格式检查 |
 | `uv run mypy src` | 类型检查 |
 
+## 人格配置
+
+`personas/astra.toml` 是「她的灵魂」——身份、性格数值、说话风格、行为规则、
+降级话术。改完重启 `astra serve` 生效。
+
+情绪 / 动作 / 音色风格的**白名单不在这个文件里**，它们在
+`src/astra/domain/vocabulary.py`：那是与 Unity 端的协议契约，必须有单一真相，
+并通过 `GET /v1/config` 分发给客户端。
+
+## 验收（M1a）
+
+```powershell
+uv run pytest -q                          # 全绿
+uv run ruff check . ; uv run ruff format --check . ; uv run mypy src
+
+# 正常路径：200 + status=ok + 结构化回复
+# 负向路径：关掉 LM Studio 后重跑
+#   /health       → llm=down, overall=degraded, HTTP 仍 200
+#   /v1/chat/turns → 200 + status=failed + failure.code=llm_unavailable + 非空中文 reply
+#   GET 历史       → 用户消息与诚实回复都在
+```
+
 ## 验收（M0）
 
 ```powershell
-# A. pytest passes
-uv run pytest -q
-
-# B. lint / format / type check
-uv run ruff check .
-uv run ruff format --check .
-uv run mypy src
-
-# C. health returns 200
-uv run astra serve
-# 另开终端：
-$r = Invoke-WebRequest -Uri http://127.0.0.1:8000/health -UseBasicParsing
-$r.StatusCode   # 期望 200
-
-# D. empty DB can be initialized from scratch
-Remove-Item .\data\astra.db* -Force -ErrorAction SilentlyContinue
 uv run astra migrate
 uv run astra migrate   # 再跑一次，应幂等成功
+
+Remove-Item .\data\astra.db* -Force -ErrorAction SilentlyContinue   # 删库前先停服务
 ```
 
-> `Remove-Item .\data\astra.db*` 的通配是必须的 —— WAL 模式会额外产生 `astra.db-wal` / `astra.db-shm`。
-> 删库前请先停掉服务，否则 Windows 上文件被占用会删除失败。
+> `Remove-Item .\data\astra.db*` 的通配是必须的 —— WAL 模式会额外产生
+> `astra.db-wal` / `astra.db-shm`。删库前请先停掉服务，否则 Windows 上文件被占用
+> 会删除失败。
 
 ## 项目结构
 
 ```
+personas/astra.toml     # 人格配置
 src/astra/
 ├─ main.py              # create_app() 工厂 + uvicorn 入口（唯一的依赖装配点）
 ├─ settings.py          # pydantic-settings 配置
 ├─ logging_setup.py     # 结构化日志 + 敏感字段脱敏
 ├─ cli.py               # serve / migrate
-├─ api/                 # FastAPI 路由层
+├─ api/                 # FastAPI 路由层 + HTTP 契约模型
 ├─ domain/              # 纯数据与 Protocol（不依赖任何框架）
-├─ application/         # 用例编排
-├─ infrastructure/      # SQLite 等具体实现
-└─ providers/           # 外部推理服务适配器（M1 起）
+├─ application/         # 用例编排：orchestrator / conversation / prompt / parser
+├─ infrastructure/      # SQLite 仓储与迁移、人格 TOML 加载
+└─ providers/lmstudio/  # 唯一允许 import httpx 的地方
 ```
 
-分层依赖方向为 `API -> Application -> Domain`，`Infrastructure` 实现 `Domain` 中定义的端口。
-`src/astra/domain/**` 禁止 import `fastapi` / `sqlite3` / `infrastructure`，由 `tests/unit/test_architecture_rules.py` 强制执行。
+分层依赖方向为 `API -> Application -> Domain`，`Infrastructure` 实现 `Domain`
+中定义的端口。`src/astra/domain/**` 禁止 import `fastapi` / `sqlite3` /
+`infrastructure`；`domain`、`application`、`api` 都禁止 import HTTP 客户端——
+由 `tests/unit/test_architecture_rules.py` 强制执行。
 
-## 配置
+## 已知限制
 
-所有配置通过环境变量或 `.env` 注入，前缀 `ASTRA_`。完整键清单见 [`.env.example`](.env.example)。
-
-`.env` 已被 `.gitignore` 忽略，**不要提交**。
+- **M1 不做流式输出**（留到 P1）。一轮回复耗时约 3–9 秒。
+- **同一会话的 turn 是串行的**：一次长 LLM 调用会阻塞该会话的下一轮。
+  单用户场景可接受，M4 做 interruption 时重新评估。
+- **M2/M3 的功能是显式空桩**：`retrieve_memory` / `apply_state_delta` /
+  `enqueue_memory_extraction` 返回空值并记 DEBUG 日志。`TurnResult.stubs_used`
+  会如实上报它们，`tests/unit/test_orchestrator.py` 有一条「桩账本」断言——
+  M2 实现任何一个都会让它变红，强制显式更新。
+- 尚未接 STT / TTS / Unity（M4 / M5）。
 
 ## 文档
 
 - [`docs/00_README.md`](docs/00_README.md) — 项目入口
+- [`docs/04_API_AND_EVENTS.md`](docs/04_API_AND_EVENTS.md) — HTTP / WebSocket 协议
 - [`docs/08_IMPLEMENTATION_PLAN.md`](docs/08_IMPLEMENTATION_PLAN.md) — 阶段划分
 - [`docs/decisions/`](docs/decisions/) — 架构决策记录（ADR）

@@ -45,6 +45,24 @@ FORBIDDEN_ASTRA_PREFIXES: tuple[str, ...] = (
     "astra.settings",
 )
 
+#: 必须通过端口访问外部服务、不得自己发 HTTP 的层（ADR 0010）。
+#: 注意 ``api/app.py`` 是**装配点**，它 import infrastructure 是合法的，
+#: 所以这里只禁 HTTP 客户端，不禁 astra.* 前缀。
+_HTTP_CLIENT_FREE_LAYERS: tuple[str, ...] = ("domain", "application", "api")
+
+#: application 层禁止反向依赖的包。api/infrastructure/providers 都在它外侧。
+_FORBIDDEN_IN_APPLICATION: tuple[str, ...] = (
+    "astra.api",
+    "astra.infrastructure",
+    "astra.providers",
+)
+
+FORBIDDEN_HTTP_CLIENTS: frozenset[str] = frozenset({"aiohttp", "httpx", "requests", "urllib3"})
+
+
+def _layer_files(layer: str) -> list[Path]:
+    return sorted((_SRC / layer).rglob("*.py"))
+
 
 def _domain_files() -> list[Path]:
     return sorted(_DOMAIN.rglob("*.py"))
@@ -95,4 +113,39 @@ def test_domain_does_not_import_outer_layers(path: Path) -> None:
     assert not offenders, (
         f"{path.relative_to(_SRC)} 反向依赖了外层包 {sorted(offenders)}；"
         "依赖方向必须保持 API -> Application -> Domain"
+    )
+
+
+_HTTP_GUARDED_FILES = [
+    (layer, path) for layer in _HTTP_CLIENT_FREE_LAYERS for path in _layer_files(layer)
+]
+
+
+@pytest.mark.parametrize(
+    "path",
+    [path for _, path in _HTTP_GUARDED_FILES],
+    ids=[f"{layer}/{path.name}" for layer, path in _HTTP_GUARDED_FILES],
+)
+def test_only_providers_may_import_http_clients(path: Path) -> None:
+    """HTTP 客户端只允许出现在 ``astra/providers/**``（ADR 0010）。
+
+    否则「provider 可替换」会在几个月后悄悄失效——某处直接 import httpx
+    发请求，换后端时就漏掉了。
+    """
+    offenders = _imported_modules(path) & FORBIDDEN_HTTP_CLIENTS
+
+    assert not offenders, (
+        f"{path.relative_to(_SRC)} 直接依赖了 HTTP 客户端 {sorted(offenders)}；"
+        "外部服务必须经由 domain 端口 + providers 适配器访问"
+    )
+
+
+@pytest.mark.parametrize("path", _layer_files("application"), ids=lambda p: p.name)
+def test_application_does_not_import_outer_layers(path: Path) -> None:
+    """application 层只能依赖 domain，实现由装配点注入。"""
+    offenders = [m for m in _imported_modules(path) if m.startswith(_FORBIDDEN_IN_APPLICATION)]
+
+    assert not offenders, (
+        f"{path.relative_to(_SRC)} 依赖了外层包 {sorted(offenders)}；"
+        "application 只应依赖 domain 的端口与值对象"
     )

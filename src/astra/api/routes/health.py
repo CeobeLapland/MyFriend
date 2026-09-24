@@ -11,11 +11,12 @@ HTTP 状态码**恒为 200**（只要进程还能响应）。严重程度只在 
 
 from __future__ import annotations
 
-from typing import Annotated, Any, cast
+from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
 
+from astra.api.dependencies import get_health_service
 from astra.application.health_service import HealthService
 from astra.domain.health import HealthStatus
 
@@ -40,11 +41,6 @@ class HealthResponse(BaseModel):
     components: dict[str, ComponentHealthResponse] = Field(
         description="组件名 -> 健康状态。key 集合固定，见 CANONICAL_COMPONENTS。"
     )
-
-
-def get_health_service(request: Request) -> HealthService:
-    """从 ``app.state`` 取出装配好的 HealthService。"""
-    return cast("HealthService", request.app.state.health_service)
 
 
 HealthServiceDep = Annotated[HealthService, Depends(get_health_service)]

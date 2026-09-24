@@ -10,6 +10,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from astra.domain.llm import ReasoningEffort
 from astra.settings import Settings
 
 
@@ -24,11 +25,32 @@ def test_defaults() -> None:
     assert settings.data_dir == Path("data")
     assert settings.db_path == Path("data/astra.db")
     assert settings.companion_id == "astra"
+    assert settings.user_id == "local"
+    assert settings.persona_path == Path("personas/astra.toml")
+    assert settings.conversation_idle_minutes == 60
     assert settings.llm_provider == "none"
     assert settings.llm_model == "qwen/qwen3.5-9b"
     assert settings.llm_fallback_model == "nvidia/nemotron-3-nano-4b"
+    assert settings.llm_max_tokens == 400
+    assert settings.llm_reasoning_effort is ReasoningEffort.NONE
+    assert settings.llm_history_max_messages == 20
+    assert settings.llm_history_max_chars == 12000
     assert settings.health_probe_timeout_s == 2.0
     assert settings.health_db_required is True
+
+
+def test_reasoning_effort_can_be_overridden(monkeypatch: pytest.MonkeyPatch) -> None:
+    """实测 qwen3.5-9b 默认开思考，必须能通过配置关掉。"""
+    monkeypatch.setenv("ASTRA_LLM_REASONING_EFFORT", "none")
+
+    assert Settings(_env_file=None).llm_reasoning_effort is ReasoningEffort.NONE
+
+
+def test_invalid_reasoning_effort_rejected(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ASTRA_LLM_REASONING_EFFORT", "maximum")
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
 
 
 def test_env_override(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -17,6 +17,7 @@ from fastapi.testclient import TestClient
 
 from astra.api.app import create_app
 from astra.domain.health import CANONICAL_COMPONENTS
+from astra.infrastructure.db.migrations import expected_version
 from astra.settings import Settings
 
 #: WAL 模式会额外产生 -wal / -shm 边车文件，清理时必须一并覆盖
@@ -72,7 +73,10 @@ def test_lifespan_creates_database_file(client: TestClient, db_path: Path) -> No
 
 
 def test_lifespan_reports_schema_version(client: TestClient) -> None:
-    assert client.get("/health").json()["schema_version"] == 1
+    latest = expected_version()
+    assert latest is not None
+
+    assert client.get("/health").json()["schema_version"] == int(latest)
 
 
 # ── 响应契约（ADR 0006）─────────────────────────────────

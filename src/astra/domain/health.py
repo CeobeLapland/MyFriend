@@ -17,6 +17,9 @@ CANONICAL_COMPONENTS: tuple[str, ...] = ("api", "database", "llm", "stt", "tts")
 #: API 组件。由 HealthService 直接合成——能产生健康报告即说明 API 正在服务。
 API_COMPONENT = "api"
 
+#: LLM 组件。M1 起由 ``providers.lmstudio.LMStudioHealthProbe`` 注册。
+LLM_COMPONENT = "llm"
+
 #: 数据库组件。其 ``detail["schema_version"]`` 会被提升为报告的顶层字段。
 DATABASE_COMPONENT = "database"
 

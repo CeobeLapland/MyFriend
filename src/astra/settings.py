@@ -26,6 +26,8 @@ from typing import Literal
 from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from astra.domain.llm import ReasoningEffort
+
 LogFormat = Literal["json", "text"]
 Environment = Literal["dev", "test", "prod"]
 LLMProviderName = Literal["none", "lmstudio"]
@@ -58,8 +60,14 @@ class Settings(BaseSettings):
     data_dir: Path = Path("./data")
     db_path: Path = Path("./data/astra.db")
     companion_id: str = "astra"
+    #: M1 还没有 users 表，用一个固定本地用户标识
+    user_id: str = "local"
+    #: 人格配置（随仓库分发，不是用户数据）
+    persona_path: Path = Path("./personas/astra.toml")
+    #: 空闲多久后自动结束当前会话并新开一个（ADR 0012）
+    conversation_idle_minutes: int = Field(default=60, ge=1)
 
-    # ── LLM（M1 起生效；M0 保持 none）────────────────────
+    # ── LLM ─────────────────────────────────────────────
     llm_provider: LLMProviderName = "none"
     llm_base_url: str = "http://localhost:1234/v1"
     llm_api_key: SecretStr = SecretStr("lm-studio-local")
@@ -67,8 +75,15 @@ class Settings(BaseSettings):
     llm_fallback_model: str = "nvidia/nemotron-3-nano-4b"
     llm_connect_timeout_s: float = Field(default=5.0, gt=0)
     llm_request_timeout_s: float = Field(default=120.0, gt=0)
-    llm_max_tokens: int = Field(default=1024, ge=1)
+    #: 4 字段 profile 实测只用 ~90-115 token；给最坏延迟一个上界（ADR 0011）
+    llm_max_tokens: int = Field(default=400, ge=1)
     llm_temperature: float = Field(default=0.7, ge=0.0, le=2.0)
+    #: 默认 none：实测 qwen3.5-9b 开思考时一次问候要 15.4s，关掉后 3.4s。
+    #: `enable_thinking=false` 与 `/no_think` 都无效，只有这个参数管用。
+    llm_reasoning_effort: ReasoningEffort = ReasoningEffort.NONE
+    #: 上下文窗口预算（按字符，不是 token——本地没有 qwen 的词表）
+    llm_history_max_messages: int = Field(default=20, ge=1)
+    llm_history_max_chars: int = Field(default=12000, ge=1)
 
     # ── 健康检查 ────────────────────────────────────────
     health_probe_timeout_s: float = Field(default=2.0, gt=0)

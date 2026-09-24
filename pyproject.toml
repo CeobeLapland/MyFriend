@@ -6,6 +6,7 @@ readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "fastapi>=0.141.1",
+    "httpx>=0.28.1",
     "pydantic>=2.13.5",
     "pydantic-settings>=2.15.0",
     "uvicorn>=0.53.0",
@@ -63,7 +64,8 @@ ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 # S106: 测试里会用形如 secret 的假值，不是真实凭据
-"tests/**" = ["S101", "ANN201", "ANN001", "ANN202", "T20", "S106"]
+# ANN401: 测试辅助函数（如 fakes 的 **overrides）用 Any 是刻意的
+"tests/**" = ["S101", "ANN201", "ANN001", "ANN202", "ANN401", "T20", "S106"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["astra"]
@@ -96,7 +98,6 @@ addopts = "-ra --strict-markers --strict-config"
 
 [dependency-groups]
 dev = [
-    "httpx>=0.28.1",
     "mypy>=2.3.1",
     "pytest>=9.1.1",
     "ruff>=0.16.8",
