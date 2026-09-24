@@ -35,9 +35,11 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from typing import Any
 
 from astra.application.assistant_schema import build_response_format
 from astra.application.conversation_service import ConversationService, ResolvedConversation
+from astra.application.event_bus import EventBus
 from astra.application.prompt_builder import (
     ConversationContext,
     PromptBudget,
@@ -52,6 +54,7 @@ from astra.domain.errors import (
     LLMDisabledError,
     LLMResponseError,
 )
+from astra.domain.events import EventType, make_event
 from astra.domain.ids import new_id
 from astra.domain.llm import LLMMessage, LLMRequest, LLMResponse, ReasoningEffort
 from astra.domain.persona import Persona
@@ -108,6 +111,9 @@ class TurnRequest:
     conversation_id: str | None = None
     session_id: str | None = None
     correlation_id: str | None = None
+    #: 由调用方预先分配（``POST /v1/chat/messages`` 要在 202 里先返回它）。
+    #: 为 ``None`` 时由 Orchestrator 生成。
+    turn_id: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -157,12 +163,15 @@ class Orchestrator:
         conversations: ConversationService,
         persona: Persona,
         config: TurnConfig,
+        bus: EventBus | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._llm = llm
         self._conversations = conversations
         self._persona = persona
         self._config = config
+        #: 没有订阅者时 publish 是空操作，所以默认自带一个 bus 不会产生副作用
+        self._bus = bus if bus is not None else EventBus()
         self._clock = clock if clock is not None else (lambda: datetime.now(tz=UTC))
         #: 会话解析阶段的串行化，避免两个并发请求同时新建会话
         self._resolve_lock = asyncio.Lock()
@@ -173,7 +182,7 @@ class Orchestrator:
     async def run_turn(self, request: TurnRequest) -> TurnResult:
         """执行一次完整 turn。任何受控失败都体现在 ``TurnResult.failure`` 里。"""
         started = time.perf_counter()
-        turn_id = new_id()
+        turn_id = request.turn_id or new_id()
 
         try:
             async with self._resolve_lock:
@@ -186,6 +195,7 @@ class Orchestrator:
                 exc,
                 started,
                 retries=0,
+                correlation_id=request.correlation_id or turn_id,
             )
 
         async with self._lock_for(resolved.conversation.id):
@@ -204,11 +214,30 @@ class Orchestrator:
         correlation_id = request.correlation_id or turn_id
         conversation_id = resolved.conversation.id
 
+        if resolved.created:
+            self._publish(
+                EventType.CONVERSATION_CREATED,
+                correlation_id,
+                {"conversation_id": conversation_id, "companion_id": self._config.companion_id},
+            )
+
+        self._publish(
+            EventType.TURN_STARTED,
+            correlation_id,
+            {
+                "turn_id": turn_id,
+                "conversation_id": conversation_id,
+                "session_id": request.session_id,
+            },
+        )
+
         try:
             user_text = normalize_input(request.text, max_chars=self._config.input_max_chars)
         except InvalidInputError as exc:
             # 空输入不落库——没有值得保存的内容
-            return self._failed_result(turn_id, conversation_id, exc, started, retries=0)
+            return self._failed_result(
+                turn_id, conversation_id, exc, started, retries=0, correlation_id=correlation_id
+            )
 
         try:
             context = await self._build_context(conversation_id, user_text)
@@ -221,7 +250,7 @@ class Orchestrator:
         await self._apply_state_delta(outcome)  # 空桩
         await self._enqueue_memory_extraction(outcome)  # 空桩
 
-        await self._conversations.append_turn(
+        user_message, assistant_message = await self._conversations.append_turn(
             conversation_id=conversation_id,
             turn_id=turn_id,
             user_text=user_text,
@@ -230,16 +259,33 @@ class Orchestrator:
             correlation_id=correlation_id,
         )
 
+        self._publish_message(correlation_id, user_message.id, conversation_id, turn_id, Role.USER)
+        self._publish_message(
+            correlation_id, assistant_message.id, conversation_id, turn_id, Role.ASSISTANT
+        )
+        self._publish_assistant_output(correlation_id, turn_id, outcome.response)
+
+        total_ms = _elapsed_ms(started)
+        self._publish(
+            EventType.TURN_COMPLETED,
+            correlation_id,
+            {
+                "turn_id": turn_id,
+                "conversation_id": conversation_id,
+                "status": "ok",
+                "retries": retries,
+                "degraded": outcome.degraded,
+                "total_ms": total_ms,
+            },
+        )
+
         return TurnResult(
             turn_id=turn_id,
             conversation_id=conversation_id,
             response=outcome.response,
             failure=None,
             stubs_used=STUB_STAGES,
-            timings=TurnTimings(
-                total_ms=_elapsed_ms(started),
-                llm_ms=llm_response.latency_ms,
-            ),
+            timings=TurnTimings(total_ms=total_ms, llm_ms=llm_response.latency_ms),
             model=llm_response.model,
             retries=retries,
             degraded=outcome.degraded,
@@ -378,7 +424,9 @@ class Orchestrator:
             },
         )
 
-        return self._failed_result(turn_id, conversation_id, error, started, retries=0)
+        return self._failed_result(
+            turn_id, conversation_id, error, started, retries=0, correlation_id=correlation_id
+        )
 
     def _failed_result(
         self,
@@ -388,14 +436,30 @@ class Orchestrator:
         started: float,
         *,
         retries: int,
+        correlation_id: str | None = None,
     ) -> TurnResult:
+        reply = self._honest_reply(error.code)
+
+        self._publish(
+            EventType.TURN_FAILED,
+            correlation_id or turn_id,
+            {
+                "turn_id": turn_id,
+                "conversation_id": conversation_id,
+                "code": error.code.value,
+                "message": error.message,
+                "reply": reply,
+                "recoverable": error.retryable or error.code is ErrorCode.LLM_UNAVAILABLE,
+            },
+        )
+
         return TurnResult(
             turn_id=turn_id,
             conversation_id=conversation_id,
             response=None,
             failure=TurnFailure(
                 code=error.code,
-                message=self._honest_reply(error.code),
+                message=reply,
                 recoverable=error.retryable or error.code is ErrorCode.LLM_UNAVAILABLE,
             ),
             stubs_used=STUB_STAGES,
@@ -413,6 +477,79 @@ class Orchestrator:
             lock = asyncio.Lock()
             self._conversation_locks[conversation_id] = lock
         return lock
+
+    # ── 事件发布 ────────────────────────────────────────
+
+    def _publish(self, event_type: EventType, correlation_id: str, payload: dict[str, Any]) -> None:
+        self._bus.publish(make_event(event_type, correlation_id=correlation_id, payload=payload))
+
+    def _publish_message(
+        self,
+        correlation_id: str,
+        message_id: str,
+        conversation_id: str,
+        turn_id: str,
+        role: Role,
+    ) -> None:
+        self._publish(
+            EventType.CONVERSATION_MESSAGE_CREATED,
+            correlation_id,
+            {
+                "message_id": message_id,
+                "conversation_id": conversation_id,
+                "turn_id": turn_id,
+                "role": role.value,
+            },
+        )
+
+    def _publish_assistant_output(
+        self, correlation_id: str, turn_id: str, response: AssistantResponse
+    ) -> None:
+        """把回复正文与**归一化后**的 emotion / action 发给客户端。
+
+        emotion / action 必须是归一化后的值——原始 LLM 字符串绝不能流到 Unity
+        （`docs/04_API_AND_EVENTS.md` §5 明文要求）。
+        """
+        self._publish(
+            EventType.ASSISTANT_TEXT_COMPLETED,
+            correlation_id,
+            {
+                "turn_id": turn_id,
+                "reply": response.reply,
+                "emotion": {
+                    "primary": response.emotion.primary,
+                    "intensity": response.emotion.intensity,
+                },
+                "action": {
+                    "name": response.action.name,
+                    "intensity": response.action.intensity,
+                },
+                "voice": {
+                    "style": response.voice.style,
+                    "speed": response.voice.speed,
+                    "pitch": response.voice.pitch,
+                },
+            },
+        )
+        self._publish(
+            EventType.AVATAR_EXPRESSION_SET,
+            correlation_id,
+            {
+                "turn_id": turn_id,
+                "emotion": response.emotion.primary,
+                "intensity": response.emotion.intensity,
+            },
+        )
+        self._publish(
+            EventType.AVATAR_ACTION_PLAY,
+            correlation_id,
+            {
+                "turn_id": turn_id,
+                "name": response.action.name,
+                "intensity": response.action.intensity,
+                "priority": "normal",
+            },
+        )
 
 
 def normalize_input(text: str, *, max_chars: int) -> str:

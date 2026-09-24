@@ -7,12 +7,15 @@
 
 from __future__ import annotations
 
+import asyncio
+import logging
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, status
 
-from astra.api.dependencies import get_orchestrator
+from astra.api.dependencies import get_conversations, get_orchestrator
 from astra.api.schemas import (
+    AcceptedBody,
     ActionBody,
     AssistantResponseBody,
     EmotionBody,
@@ -22,11 +25,20 @@ from astra.api.schemas import (
     TurnResponse,
     VoiceBody,
 )
+from astra.application.conversation_service import ConversationService
 from astra.application.orchestrator import Orchestrator, TurnRequest, TurnResult
+from astra.domain.ids import new_id
+
+_logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1/chat", tags=["chat"])
 
 OrchestratorDep = Annotated[Orchestrator, Depends(get_orchestrator)]
+ConversationsDep = Annotated[ConversationService, Depends(get_conversations)]
+
+#: 火后不管的后台 turn 任务。
+#: 持引用是为了避免 asyncio 在任务完成前把它回收掉（官方推荐做法）。
+_BACKGROUND_TURNS: set[asyncio.Task[TurnResult]] = set()
 
 
 @router.post(
@@ -39,6 +51,40 @@ async def create_turn(body: TurnRequestBody, orchestrator: OrchestratorDep) -> T
         TurnRequest(text=body.content, conversation_id=body.conversation_id)
     )
     return _to_response(result)
+
+
+@router.post(
+    "/messages",
+    response_model=AcceptedBody,
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="投递一条消息，立即返回；结果通过 WebSocket 推送",
+)
+async def accept_message(
+    body: TurnRequestBody,
+    orchestrator: OrchestratorDep,
+    conversations: ConversationsDep,
+) -> AcceptedBody:
+    """立即返回 202，真正的 turn 在后台跑。
+
+    这里先解析出 ``conversation_id`` 并分配 ``turn_id``，是为了让客户端**立刻**
+    知道该监听哪一段会话——否则它得等 ``turn.started`` 才知道。
+    """
+    resolved = await conversations.resolve_or_create(body.conversation_id)
+    turn_id = new_id()
+
+    task = asyncio.create_task(
+        orchestrator.run_turn(
+            TurnRequest(
+                text=body.content,
+                conversation_id=resolved.conversation.id,
+                turn_id=turn_id,
+            )
+        )
+    )
+    _BACKGROUND_TURNS.add(task)
+    task.add_done_callback(_BACKGROUND_TURNS.discard)
+
+    return AcceptedBody(turn_id=turn_id, conversation_id=resolved.conversation.id)
 
 
 def _to_response(result: TurnResult) -> TurnResponse:

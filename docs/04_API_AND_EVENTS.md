@@ -194,18 +194,39 @@ LLM 不可用时同样是 200，但 `status` 为 `failed`、`failure.code` 给�
 服务器可能推送：
 
 ```text
+conversation.created
 turn.started
-memory.retrieval.completed
+conversation.message.created
 assistant.text.delta
 assistant.text.completed
 assistant.state.updated
+memory.retrieval.completed
 voice.synthesis.started
 voice.audio.chunk
 voice.synthesis.completed
 avatar.expression.set
 avatar.action.play
 turn.completed
+turn.failed
+error.protocol
 ```
+
+一轮完整对话的实际序列（M1b 已实现，新会话的第一轮会多一条 `conversation.created` 打头）：
+
+```text
+turn.started
+→ conversation.message.created（user）
+→ conversation.message.created（assistant）
+→ assistant.text.completed
+→ avatar.expression.set
+→ avatar.action.play
+→ turn.completed
+```
+
+`error.protocol` 只在客户端发来非法帧时出现，且**不会关闭连接**。
+
+> M1 不做流式，所以没有 `assistant.text.delta`——它在 P1 加流式时启用。
+> 当前 `assistant.text.completed` 一次给出完整 `reply`。
 
 ## 4. 推荐事件类型
 

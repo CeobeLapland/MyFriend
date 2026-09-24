@@ -10,6 +10,7 @@ dependencies = [
     "pydantic>=2.13.5",
     "pydantic-settings>=2.15.0",
     "uvicorn>=0.53.0",
+    "websockets>=17.1",
 ]
 
 [project.scripts]
@@ -66,6 +67,8 @@ ignore = [
 # S106: 测试里会用形如 secret 的假值，不是真实凭据
 # ANN401: 测试辅助函数（如 fakes 的 **overrides）用 Any 是刻意的
 "tests/**" = ["S101", "ANN201", "ANN001", "ANN202", "ANN401", "T20", "S106"]
+# CLI 就是要往 stdout 打印，print 在这里是正确工具
+"src/astra/cli.py" = ["T20"]
 
 [tool.ruff.lint.isort]
 known-first-party = ["astra"]

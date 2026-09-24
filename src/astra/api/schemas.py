@@ -80,6 +80,17 @@ class TurnResponse(BaseModel):
     timings: TimingsBody
 
 
+class AcceptedBody(BaseModel):
+    """``POST /v1/chat/messages`` 的响应。
+
+    只表示"收到了"，实际结果通过 WebSocket 推送。
+    """
+
+    turn_id: str
+    conversation_id: str
+    status: Literal["accepted"] = "accepted"
+
+
 class MessageBody(BaseModel):
     id: str
     conversation_id: str

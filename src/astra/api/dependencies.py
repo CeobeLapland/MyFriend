@@ -1,14 +1,20 @@
 """路由共享的依赖注入函数。
 
 统一从 ``app.state`` 取装配好的组件——``create_app`` 是唯一的装配点。
+
+**用 ``HTTPConnection`` 而不是 ``Request``**：前者是 ``Request`` 与 ``WebSocket``
+的公共基类，因此同一组依赖函数既能给 HTTP 路由用，也能给 WebSocket 路由用。
+用 ``Request`` 的话 WS 路由会在解析依赖时报
+``missing 1 required positional argument``——WS 作用域里没有 ``Request``。
 """
 
 from __future__ import annotations
 
 from typing import cast
 
-from fastapi import Request
+from starlette.requests import HTTPConnection
 
+from astra.api.connection_manager import ConnectionManager
 from astra.application.conversation_service import ConversationService
 from astra.application.health_service import HealthService
 from astra.application.orchestrator import Orchestrator
@@ -16,21 +22,25 @@ from astra.domain.persona import Persona
 from astra.settings import Settings
 
 
-def get_health_service(request: Request) -> HealthService:
-    return cast("HealthService", request.app.state.health_service)
+def get_health_service(connection: HTTPConnection) -> HealthService:
+    return cast("HealthService", connection.app.state.health_service)
 
 
-def get_orchestrator(request: Request) -> Orchestrator:
-    return cast("Orchestrator", request.app.state.orchestrator)
+def get_orchestrator(connection: HTTPConnection) -> Orchestrator:
+    return cast("Orchestrator", connection.app.state.orchestrator)
 
 
-def get_conversations(request: Request) -> ConversationService:
-    return cast("ConversationService", request.app.state.conversations)
+def get_conversations(connection: HTTPConnection) -> ConversationService:
+    return cast("ConversationService", connection.app.state.conversations)
 
 
-def get_persona(request: Request) -> Persona:
-    return cast("Persona", request.app.state.persona)
+def get_connection_manager(connection: HTTPConnection) -> ConnectionManager:
+    return cast("ConnectionManager", connection.app.state.connection_manager)
 
 
-def get_app_settings(request: Request) -> Settings:
-    return cast("Settings", request.app.state.settings)
+def get_persona(connection: HTTPConnection) -> Persona:
+    return cast("Persona", connection.app.state.persona)
+
+
+def get_app_settings(connection: HTTPConnection) -> Settings:
+    return cast("Settings", connection.app.state.settings)

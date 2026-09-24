@@ -12,17 +12,22 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import timedelta
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, status
+from fastapi.responses import JSONResponse
 
 from astra import __version__
+from astra.api.connection_manager import ConnectionManager
 from astra.api.routes.chat import router as chat_router
+from astra.api.routes.chat_ws import router as chat_ws_router
 from astra.api.routes.config import router as config_router
 from astra.api.routes.conversations import router as conversations_router
 from astra.api.routes.health import router as health_router
 from astra.application.conversation_service import ConversationService
+from astra.application.event_bus import EventBus
 from astra.application.health_service import HealthService
 from astra.application.orchestrator import Orchestrator, TurnConfig
 from astra.application.prompt_builder import PromptBudget
+from astra.domain.errors import ConversationNotFoundError
 from astra.domain.health import DATABASE_COMPONENT
 from astra.domain.persona import Persona
 from astra.domain.ports import HealthProbe, LLMProvider
@@ -72,12 +77,24 @@ def create_app(settings: Settings, *, llm: LLMProvider | None = None) -> FastAPI
     app.state.settings = settings
     app.state.persona = persona
 
+    app.add_exception_handler(ConversationNotFoundError, _conversation_not_found_handler)
+
     app.include_router(health_router)
     app.include_router(config_router)
     app.include_router(chat_router)
     app.include_router(conversations_router)
+    app.include_router(chat_ws_router)
 
     return app
+
+
+async def _conversation_not_found_handler(_request: Request, exc: Exception) -> JSONResponse:
+    """未知 / 已结束的会话统一返回 404，而不是静默返回空列表。"""
+    assert isinstance(exc, ConversationNotFoundError)  # noqa: S101 - 由 add_exception_handler 保证
+    return JSONResponse(
+        status_code=status.HTTP_404_NOT_FOUND,
+        content={"detail": {"code": exc.code.value, "message": exc.message}},
+    )
 
 
 def _install_health(app: FastAPI, settings: Settings) -> None:
@@ -115,10 +132,14 @@ def _install_conversation_stack(
 
     provider = llm if llm is not None else _build_llm_provider(settings)
 
+    # 事件总线是单进程内的广播点：Orchestrator 往里发，ConnectionManager 往外推
+    bus = EventBus()
+
     orchestrator = Orchestrator(
         llm=provider,
         conversations=conversations,
         persona=persona,
+        bus=bus,
         config=TurnConfig(
             user_id=settings.user_id,
             companion_id=settings.companion_id,
@@ -135,6 +156,8 @@ def _install_conversation_stack(
 
     app.state.conversations = conversations
     app.state.orchestrator = orchestrator
+    app.state.event_bus = bus
+    app.state.connection_manager = ConnectionManager(bus)
 
 
 def _build_llm_provider(settings: Settings) -> LLMProvider | None:

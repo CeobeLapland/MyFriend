@@ -1,6 +1,7 @@
 # ADR 0013 — In-Process Event Bus with Bounded Subscriber Queues
 
-> **状态**：决策已定，实现在 **M1b**（M1a 不发布事件）。
+> **状态**：已实现（M1b）。`src/astra/application/event_bus.py`，
+> 测试见 `tests/unit/test_event_bus.py` 与 `tests/integration/test_chat_ws.py`。
 
 ## Decision
 

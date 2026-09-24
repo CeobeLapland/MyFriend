@@ -92,6 +92,7 @@ EXTRA_ALLOWLIST: frozenset[str] = frozenset(
         "conversation_id",
         "correlation_id",
         "detail",
+        "dropped",
         "duration_ms",
         "event",
         "latency_ms",
