@@ -7,29 +7,27 @@
 ===========================  ==============================================
 input_received               实现
 normalize_input              实现（strip + 长度上限 + 空输入拒绝）
-retrieve_memory              **M2 实现**（检索结果填进 prompt 的 Layer 5）
+retrieve_memory              M2 实现（检索结果填进 prompt 的 Layer 5）
+load_state                   M3 实现（快照填进 prompt 的 Layer 4）
 build_context                实现
 ask_llm                      实现（按 ADR 0011 的重试矩阵，最多重试 1 次）
 validate_response            实现（``response_parser``）
-apply_state_delta            **空桩** —— M3 实现
+apply_state_delta            M3 实现（事件规则 + 情绪靠拢 → 落库 + 发事件）
 persist_conversation         实现（一个事务写 user + assistant）
-enqueue_memory_extraction    **M2 实现**（候选打分 / 去重 / 落库）
+enqueue_memory_extraction    M2 实现（候选打分 / 去重 / 落库）
 dispatch_events              M1b 接入事件总线
 ===========================  ==============================================
 
-**M2 的两处实现要点**：
+**所有阶段都已实现，``STUB_STAGES`` 现在是空集。** 桩账本测试保留下来，
+语义从"哪些是桩"变成"**还有没有桩**"——M6 加 ``tool_calls`` 时它还会响。
 
-1. **记忆子系统整体降级**。``retrieve`` / ``ingest`` 的任何失败都只记日志，
-   绝不让 turn 失败——LLM 已经成功，用户必须拿到回复。这与 ``HealthService``
-   隔离探针异常、``Orchestrator`` 隔离 LLM 异常是同一个模式（ADR 0014）。
-2. **提取排在消息持久化之后**（对齐 `docs/02` §2.2 的步骤顺序），这样候选能带上
-   ``source_message_id``。但**消息事件先发、提取后跑**——回复要尽快到达用户，
-   记忆落库是事后记账，不该拖慢 ``assistant.text.completed``。
+**M3 的状态顺序不能错**：快照必须在 ``ask_llm`` **之前**读（Layer 4 要用），
+状态写回必须在 ``validate_response`` **之后**（要用到 ``emotion``）。
+写反了会"用上一轮的状态回答这一轮"，而且很难看出来。这与 `docs/02` §2.2 的
+流水线顺序一致。
 
-**空桩的形态**：返回合法空值让下游正常走完，绝不 ``raise NotImplementedError``、
-绝不 ``pass``——后者会让"忘了实现"和"刻意留空"长得一样。每个空桩都会记一条
-DEBUG 日志，并登记进 ``TurnResult.stubs_used``；``test_orchestrator.py`` 里有一条
-「桩账本」断言，M2 实现任何一个都会让它变红，强制显式更新。
+**三个子系统的失败都不影响 turn**（记忆、状态、以及将来的工具）：各自的异常都在
+自己的边界内被吞掉并记日志。LLM 已经成功，用户必须拿到回复（ADR 0014）。
 
 **降级策略**（ADR 0014）：LLM 不可用**不抛 5xx**，而是返回一个
 ``TurnResult.failure`` + 由代码拥有的诚实回复，并且**仍然把用户消息持久化**，
@@ -56,6 +54,7 @@ from astra.application.prompt_builder import (
     build_conversation_context,
 )
 from astra.application.response_parser import ParseOutcome, parse_assistant_response
+from astra.application.state_service import StateService
 from astra.domain.conversation import Role
 from astra.domain.errors import (
     AstraError,
@@ -71,14 +70,16 @@ from astra.domain.memory import Memory
 from astra.domain.persona import Persona
 from astra.domain.ports import LLMProvider
 from astra.domain.response import AssistantResponse
+from astra.domain.state import StateSnapshot, baseline_emotion, baseline_relationship
 
 _logger = logging.getLogger(__name__)
 
 #: 首次调用 + 最多重试 1 次
 MAX_ATTEMPTS = 2
 
-#: 仍然刻意留空的阶段。见模块文档字符串。
-STUB_STAGES: frozenset[str] = frozenset({"apply_state_delta"})
+#: 仍然刻意留空的阶段。**M3 起是空集**——所有流水线阶段都已实现。
+#: 保留这个常量与「桩账本」测试，是为了 M6 加 ``tool_calls`` 时它还会响。
+STUB_STAGES: frozenset[str] = frozenset()
 
 #: 由**代码**拥有的诚实降级文案。
 #: 不能问 LLM——LLM 正是挂掉的那个。人格文件可用同名错误码覆盖（ADR 0014）。
@@ -178,6 +179,7 @@ class Orchestrator:
         config: TurnConfig,
         bus: EventBus | None = None,
         memory: MemoryService | None = None,
+        state: StateService | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._llm = llm
@@ -186,6 +188,8 @@ class Orchestrator:
         self._config = config
         #: 为 ``None`` 时记忆子系统整体缺席（不检索、不写入），turn 照常
         self._memory = memory
+        #: 为 ``None`` 时状态子系统整体缺席（Layer 4 省略、状态不更新），turn 照常
+        self._state = state
         #: 没有订阅者时 publish 是空操作，所以默认自带一个 bus 不会产生副作用
         self._bus = bus if bus is not None else EventBus()
         self._clock = clock if clock is not None else (lambda: datetime.now(tz=UTC))
@@ -256,15 +260,18 @@ class Orchestrator:
             )
 
         try:
-            memories = await self._retrieve_memory(user_text)
-            context = await self._build_context(conversation_id, user_text, memories=memories)
+            snapshot = await self._load_state()
+            memories = await self._retrieve_memory(
+                user_text, relationship_relevance=snapshot.relationship.relevance()
+            )
+            context = await self._build_context(
+                conversation_id, user_text, state=snapshot, memories=memories
+            )
             llm_response, outcome, retries = await self._ask_and_parse(context, correlation_id)
         except AstraError as exc:
             return await self._persist_failure(
                 conversation_id, turn_id, correlation_id, user_text, exc, started
             )
-
-        await self._apply_state_delta(outcome)  # 空桩
 
         user_message, assistant_message = await self._conversations.append_turn(
             conversation_id=conversation_id,
@@ -281,8 +288,9 @@ class Orchestrator:
         )
         self._publish_assistant_output(correlation_id, turn_id, outcome.response)
 
-        # 提取排在事件之后：回复要尽快到达用户，记忆落库是事后记账。
-        # 放在 append_turn 之后是为了拿到 user_message.id 作为 provenance。
+        # 状态与记忆都排在事件之后：回复要尽快到达用户，落库是事后记账。
+        # 放在 append_turn 之后是为了让候选拿到 user_message.id 作为 provenance。
+        await self._apply_state_delta(outcome, user_text=user_text, correlation_id=correlation_id)
         created = await self._enqueue_memory_extraction(
             outcome, user_text=user_text, source_message_id=user_message.id
         )
@@ -316,7 +324,12 @@ class Orchestrator:
         )
 
     async def _build_context(
-        self, conversation_id: str, user_text: str, *, memories: Sequence[Memory] = ()
+        self,
+        conversation_id: str,
+        user_text: str,
+        *,
+        state: StateSnapshot | None = None,
+        memories: Sequence[Memory] = (),
     ) -> ConversationContext:
         history = await self._conversations.load_history(conversation_id)
 
@@ -325,6 +338,7 @@ class Orchestrator:
             history=history,
             user_text=user_text,
             budget=self._config.history_budget,
+            state=state,
             memories=memories,
         )
 
@@ -391,10 +405,65 @@ class Orchestrator:
             reasoning_effort=ReasoningEffort.NONE,
         )
 
+    # ── 状态（M3）───────────────────────────────────────
+
+    async def _load_state(self) -> StateSnapshot:
+        """读当前状态快照（含惰性衰减），填进 prompt 的 Layer 4。
+
+        **失败返回基线**：``StateService`` 内部已经吞掉了存储异常，这里的兜底是
+        为了它将来新增代码路径时也不会漏。状态缺席只是"她现在是平静的"。
+        """
+        if self._state is None:
+            return _baseline_snapshot(self._clock())
+
+        try:
+            return await self._state.load_snapshot()
+        except Exception:
+            _logger.warning(
+                "state load failed; continuing without state",
+                extra={"event": "state.failed", "detail": {"stage": "orchestrator.load"}},
+            )
+            return _baseline_snapshot(self._clock())
+
+    async def _apply_state_delta(
+        self, outcome: ParseOutcome, *, user_text: str, correlation_id: str
+    ) -> None:
+        """按本轮的用户消息与已表达情绪更新状态。
+
+        **方法名保留 ``apply_state_delta``**（对齐 `docs/02` §2.2 的流水线命名），
+        但它**不消费 LLM 的 ``state_delta`` 字段**——那个字段没有加回 schema
+        （实测 +2.3s/轮，ADR 0020）。增量来自用户侧事件规则与已经免费拿到的
+        ``emotion``。命名与实现的这点差异记在 ADR 0020 里。
+
+        ``correlation_id`` 传的是**该 turn 的** id：ADR 0012 要求一个 turn 的每个
+        事件共用它。
+
+        **失败只记日志**：``StateService`` 已经返回 ``None`` 表示失败，
+        状态缺席不该让 turn 失败。
+        """
+        if self._state is None:
+            return
+
+        try:
+            await self._state.apply_turn(
+                user_text=user_text,
+                emotion=outcome.response.emotion,
+                correlation_id=correlation_id,
+            )
+        except Exception:
+            _logger.warning(
+                "state update failed; turn is unaffected",
+                extra={"event": "state.failed", "detail": {"stage": "orchestrator.apply"}},
+            )
+
     # ── 记忆（M2）───────────────────────────────────────
 
-    async def _retrieve_memory(self, user_text: str) -> tuple[Memory, ...]:
+    async def _retrieve_memory(
+        self, user_text: str, *, relationship_relevance: float = 0.0
+    ) -> tuple[Memory, ...]:
         """检索与用户输入相关的记忆，填进 prompt 的 Layer 5。
+
+        ``relationship_relevance`` 由调用方从关系状态算出（`docs/06` §4 的第五项）。
 
         **任何失败都返回空元组**——记忆缺席只是"这次没想起来"，而抛出去会让
         整轮对话失败。``MemoryService`` 内部已经吞掉了 embedding / 存储异常，
@@ -404,7 +473,9 @@ class Orchestrator:
             return ()
 
         try:
-            hits = await self._memory.retrieve(user_text)
+            hits = await self._memory.retrieve(
+                user_text, relationship_relevance=relationship_relevance
+            )
         except Exception:
             # 记忆失败绝不能让 turn 失败：LLM 已经成功，用户必须拿到回复
             _logger.warning(
@@ -446,13 +517,6 @@ class Orchestrator:
             return 0
 
         return len(created)
-
-    async def _apply_state_delta(self, outcome: ParseOutcome) -> None:
-        """M3 实现。M2 不做任何事——这是刻意的降级行为，不是 TODO。"""
-        _logger.debug(
-            "stub stage skipped",
-            extra={"event": "turn.stage.stub", "detail": "apply_state_delta"},
-        )
 
     # ── 失败处理 ────────────────────────────────────────
 
@@ -611,6 +675,20 @@ class Orchestrator:
                 "priority": "normal",
             },
         )
+
+
+def _baseline_snapshot(now: datetime) -> StateSnapshot:
+    """状态子系统缺席 / 失败时用的快照。
+
+    用**基线**而不是"空状态"：Layer 4 渲染出来的是"她现在是平静的"，
+    而不是"她的情绪是未定义"。
+    """
+    return StateSnapshot(
+        emotion=baseline_emotion(),
+        relationship=baseline_relationship(),
+        emotion_updated_at=now,
+        relationship_updated_at=now,
+    )
 
 
 def normalize_input(text: str, *, max_chars: int) -> str:

@@ -102,6 +102,16 @@
   .mem .foot button { padding: 2px 8px; font-size: 11px; border-radius: 6px; margin-left: auto; }
   .toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
   .toolbar button { padding: 4px 10px; font-size: 12px; }
+  .state-group { margin-bottom: 10px; }
+  .state-heading { color: var(--muted); font-size: 11px; text-transform: uppercase;
+                   letter-spacing: .06em; margin-bottom: 4px; }
+  .kv-row { display: grid; grid-template-columns: 110px 1fr 44px; align-items: center;
+            gap: 8px; font-family: var(--mono); font-size: 11px; margin-bottom: 3px; }
+  .kv-row .k { color: var(--muted); }
+  .kv-row .bar { height: 6px; background: var(--panel-2); border: 1px solid var(--border);
+                 border-radius: 999px; overflow: hidden; }
+  .kv-row .fill { display: block; height: 100%; background: var(--accent); }
+  .kv-row .v { text-align: right; }
 </style>
 </head>
 <body>
@@ -153,6 +163,19 @@
           <button type="button" id="memory-clear">清空全部</button>
         </div>
         <div id="memory-list"></div>
+      </div>
+    </details>
+    <details id="state-panel">
+      <summary>状态（M3）</summary>
+      <div class="body">
+        <div class="toolbar">
+          <span class="chip" id="state-updated">…</span>
+          <button type="button" id="state-refresh">刷新</button>
+        </div>
+        <div id="state-list"></div>
+        <div class="hint" style="padding:8px 0 0">
+          只读：状态由事件驱动（用户事件规则 + 已表达的情绪），没有写入端点。
+        </div>
       </div>
     </details>
   </section>
@@ -354,6 +377,61 @@ async function setMemoryEnabled(enabled) {
   await loadMemories();
 }
 
+/* ── 状态（M3）──────────────────────────────────────── */
+
+const STATE_EMOTION_DIMS = ["happiness", "energy", "curiosity", "social_need",
+                            "stress", "embarrassment", "excitement"];
+const STATE_RELATIONSHIP_DIMS = ["familiarity", "trust", "affection", "reliance", "conflict"];
+
+function stateRow(label, value) {
+  const row = document.createElement("div");
+  row.className = "kv-row";
+
+  const name = document.createElement("span");
+  name.className = "k";
+  name.textContent = label;
+
+  const bar = document.createElement("span");
+  bar.className = "bar";
+  const fill = document.createElement("span");
+  fill.className = "fill";
+  fill.style.width = Math.round(value * 100) + "%";
+  bar.appendChild(fill);
+
+  const number = document.createElement("span");
+  number.className = "v";
+  number.textContent = value.toFixed(2);
+
+  row.append(name, bar, number);
+  return row;
+}
+
+function stateGroup(title, dims, values) {
+  const wrap = document.createElement("div");
+  wrap.className = "state-group";
+  const heading = document.createElement("div");
+  heading.className = "state-heading";
+  heading.textContent = title;
+  wrap.appendChild(heading);
+  for (const name of dims) wrap.appendChild(stateRow(name, values[name]));
+  return wrap;
+}
+
+async function loadState() {
+  const box = el("state-list");
+  try {
+    const state = await fetch("/v1/state").then((r) => r.json());
+    el("state-updated").textContent = "更新于 " + state.emotion_updated_at.slice(11, 19);
+
+    box.replaceChildren(
+      stateGroup("Mood", STATE_EMOTION_DIMS, state.emotion),
+      stateGroup("Relationship", STATE_RELATIONSHIP_DIMS, state.relationship)
+    );
+  } catch (error) {
+    box.textContent = "加载失败：" + error.message;
+  }
+}
+
 /* ── 事件流 ─────────────────────────────────────────── */
 
 function appendEvent(event) {
@@ -443,8 +521,9 @@ function handleEvent(event) {
     loadMemories().catch(() => {});
   }
 
-  // 记忆事件到达时顺手刷新面板——这是"记忆到底有没有在工作"最直接的观察点
+  // 记忆 / 状态事件到达时顺手刷新面板——这是"子系统到底有没有在工作"最直接的观察点
   if (event.type.startsWith("memory.")) loadMemories().catch(() => {});
+  if (event.type.startsWith("state.")) loadState().catch(() => {});
 }
 
 /* ── WebSocket ──────────────────────────────────────── */
@@ -595,12 +674,21 @@ el("memory-panel").addEventListener("toggle", (event) => {
   if (event.target.open) loadMemories().catch(() => {});
 });
 
+el("state-refresh").addEventListener("click", () => {
+  loadState().catch((error) => addMessage("failed", String(error), ""));
+});
+
+el("state-panel").addEventListener("toggle", (event) => {
+  if (event.target.open) loadState().catch(() => {});
+});
+
 state.sessionId = newUlid();
 addMessage("system", "开发者控制台就绪。输入文字回车发送。", "session=" + state.sessionId);
 connect();
 refreshHealth();
 loadConfig();
 loadMemories();
+loadState();
 setInterval(refreshHealth, 5000);
 </script>
 </body>

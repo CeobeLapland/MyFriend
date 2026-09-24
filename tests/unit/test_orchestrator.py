@@ -24,6 +24,7 @@ from astra.application.orchestrator import (
     normalize_input,
 )
 from astra.application.prompt_builder import PromptBudget
+from astra.application.state_service import StateConfig, StateService
 from astra.domain.conversation import Role
 from astra.domain.errors import (
     ErrorCode,
@@ -35,9 +36,11 @@ from astra.domain.errors import (
 )
 from astra.domain.llm import ReasoningEffort
 from astra.domain.memory import MemoryCandidate, MemoryType
+from astra.domain.state import EMOTION_BASELINE_VALUES
 from astra.infrastructure.db.conversation_repository import SQLiteConversationRepository
 from astra.infrastructure.db.memory_repository import SQLiteMemoryStore
 from astra.infrastructure.db.migrations import upgrade
+from astra.infrastructure.db.state_repository import SQLiteStateStore
 from astra.infrastructure.persona.toml_loader import load_persona
 from tests.fakes import FakeEmbeddingProvider, FakeLLMProvider, assistant_json, llm_response
 
@@ -101,12 +104,22 @@ def memory(db_path: Path) -> MemoryService:
     )
 
 
+@pytest.fixture
+def state_service(db_path: Path) -> StateService:
+    return StateService(
+        SQLiteStateStore(db_path),
+        config=StateConfig(companion_id="astra"),
+        clock=lambda: _BASE,
+    )
+
+
 def _orchestrator(
     conversations: ConversationService,
     persona,
     provider: FakeLLMProvider | None,
     *,
     memory: object = None,
+    state: object = None,
     **config_overrides: object,
 ) -> Orchestrator:
     return Orchestrator(
@@ -115,6 +128,7 @@ def _orchestrator(
         persona=persona,
         config=replace(_CONFIG, **config_overrides),  # type: ignore[arg-type]
         memory=memory,  # type: ignore[arg-type]
+        state=state,  # type: ignore[arg-type]
         clock=lambda: _BASE,
     )
 
@@ -154,14 +168,17 @@ def test_successful_turn_persists_both_messages(
 
 
 def test_stub_ledger(conversations: ConversationService, persona) -> None:
-    """桩账本：M2 已填掉 retrieve_memory / enqueue_memory_extraction，只剩 M3 的
-    ``apply_state_delta``。M3 实现它时这条断言会变红，强制显式更新。"""
+    """桩账本：**M3 起没有空桩了**（``apply_state_delta`` 也填掉了）。
+
+    这条测试保留下来，语义从"哪些是桩"变成"**还有没有桩**"——
+    M6 加 ``tool_calls`` 时如果又留了桩，它会立刻变红。
+    """
     orchestrator = _orchestrator(conversations, persona, FakeLLMProvider([llm_response()]))
 
     result = _run(orchestrator.run_turn(TurnRequest(text="你好")))
 
     assert result.stubs_used == STUB_STAGES
-    assert result.stubs_used == {"apply_state_delta"}
+    assert result.stubs_used == frozenset()
 
 
 def test_turn_without_a_memory_service_still_works(
@@ -592,3 +609,117 @@ def test_disabled_memory_neither_retrieves_nor_writes(
     assert "RELEVANT MEMORIES" not in provider.requests[0].system_prompt
     # 禁用期间没有写入新记忆，只有禁用前那一条
     assert len(_run(memory.list_memories())) == 1
+
+
+# ── 状态集成（M3）───────────────────────────────────────
+
+
+def test_state_is_injected_into_the_prompt(
+    conversations: ConversationService, persona, state_service: StateService
+) -> None:
+    """状态必须出现在 system prompt 的 Layer 4——否则情绪影响不了措辞。"""
+    provider = FakeLLMProvider([llm_response()])
+    orchestrator = _orchestrator(conversations, persona, provider, state=state_service)
+
+    _run(orchestrator.run_turn(TurnRequest(text="你好")))
+
+    prompt = provider.requests[0].system_prompt
+    assert "CURRENT STATE" in prompt
+    assert "Mood:" in prompt
+    assert "Relationship:" in prompt
+    assert "happiness:" in prompt
+
+
+def test_praise_raises_happiness_end_to_end(
+    conversations: ConversationService, persona, state_service: StateService
+) -> None:
+    """验收核心：user praises companion -> happiness increases。"""
+    orchestrator = _orchestrator(
+        conversations, persona, FakeLLMProvider([llm_response()]), state=state_service
+    )
+    before = _run(state_service.load_snapshot())
+
+    _run(orchestrator.run_turn(TurnRequest(text="谢谢你，你真的很厉害")))
+
+    after = _run(state_service.load_snapshot())
+    assert after.emotion.happiness > before.emotion.happiness
+    assert after.relationship.affection > before.relationship.affection
+
+
+def test_updated_state_reaches_the_next_turn_prompt(
+    conversations: ConversationService, persona, state_service: StateService
+) -> None:
+    """顺序验证：这轮写的状态，下一轮必须能被读到（读在前、写在后）。"""
+    provider = FakeLLMProvider([llm_response(), llm_response()])
+    orchestrator = _orchestrator(conversations, persona, provider, state=state_service)
+
+    _run(orchestrator.run_turn(TurnRequest(text="谢谢你，我很喜欢你")))
+    _run(orchestrator.run_turn(TurnRequest(text="你好")))
+
+    second_prompt = provider.requests[1].system_prompt
+    baseline = EMOTION_BASELINE_VALUES["happiness"]
+    assert f"- happiness: {baseline:.2f}" not in second_prompt
+
+
+def test_turn_without_a_state_service_still_works(
+    conversations: ConversationService, persona
+) -> None:
+    """状态子系统缺席不该影响聊天（Layer 4 整层省略）。"""
+    provider = FakeLLMProvider([llm_response()])
+    orchestrator = _orchestrator(conversations, persona, provider)
+
+    result = _run(orchestrator.run_turn(TurnRequest(text="你好")))
+
+    assert result.succeeded is True
+    # 缺席时 orchestrator 用基线兜底，Layer 4 仍然渲染（她只是"平静"）
+    assert "CURRENT STATE" in provider.requests[0].system_prompt
+
+
+class _BrokenState:
+    """每个方法都炸的状态替身——验证失败隔离。"""
+
+    async def load_snapshot(self) -> object:
+        raise RuntimeError("load exploded")
+
+    async def apply_turn(self, **kwargs: object) -> object:
+        raise RuntimeError("apply exploded")
+
+
+def test_state_failure_does_not_break_the_turn(conversations: ConversationService, persona) -> None:
+    """状态子系统抛异常时 turn 仍必须成功。"""
+    provider = FakeLLMProvider([llm_response()])
+    orchestrator = _orchestrator(conversations, persona, provider, state=_BrokenState())
+
+    result = _run(orchestrator.run_turn(TurnRequest(text="谢谢你")))
+
+    assert result.succeeded is True
+    assert result.response is not None
+    assert result.response.reply
+    # 兜底到基线，prompt 仍然有 Layer 4
+    assert "CURRENT STATE" in provider.requests[0].system_prompt
+
+
+def test_relationship_relevance_reaches_memory_retrieval(
+    conversations: ConversationService, persona, memory: MemoryService, state_service: StateService
+) -> None:
+    """M3 填上了 M2 检索公式里恒为 0 的那一项——关系越近，关系分项越大。"""
+    _run(
+        memory.ingest_candidates(
+            [MemoryCandidate(type=MemoryType.PREFERENCE, content=_MEMORY_TEXT)],
+            user_text=_MEMORY_TEXT,
+        )
+    )
+    orchestrator = _orchestrator(
+        conversations,
+        persona,
+        FakeLLMProvider([llm_response()]),
+        memory=memory,
+        state=state_service,
+    )
+    # 先让关系涨起来（连续称赞）
+    for _ in range(3):
+        _run(orchestrator.run_turn(TurnRequest(text="谢谢你，你真的很厉害")))
+
+    hits = _run(memory.retrieve(_MEMORY_QUERY, relationship_relevance=0.9))
+    assert hits
+    assert hits[0].components["relationship"] > 0.0

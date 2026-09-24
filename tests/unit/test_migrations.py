@@ -27,10 +27,12 @@ from astra.infrastructure.db.migrations import (
 _REQUIRED_TABLES = {
     "app_flags",
     "conversations",
+    "emotion_states",
     "memories",
     "memory_embeddings",
     "memory_vectors",
     "messages",
+    "relationship_states",
     "schema_migrations",
 }
 _EXPECTED_INDEXES = {
@@ -182,6 +184,53 @@ def test_vec_extension_is_off_by_default(db_path: Path) -> None:
 
     with open_connection(db_path) as conn, pytest.raises(sqlite3.OperationalError):
         conn.execute("SELECT vec_version()")
+
+
+# ── 状态表的值域约束（0004）─────────────────────────────
+
+
+@pytest.mark.parametrize("value", [-0.01, 1.01])
+def test_emotion_state_rejects_out_of_range_values(db_path: Path, value: float) -> None:
+    """docs/03 §2：值域固定 0..1。CHECK 是纵深防御，坏数据不该进得来。"""
+    upgrade(db_path)
+
+    with open_connection(db_path) as conn, pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO emotion_states (companion_id, happiness, energy, curiosity, "
+            "social_need, stress, embarrassment, excitement, updated_at) "
+            "VALUES ('astra', ?, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, '2026-09-24T00:00:00+00:00')",
+            (value,),
+        )
+
+
+def test_relationship_state_rejects_out_of_range_values(db_path: Path) -> None:
+    upgrade(db_path)
+
+    with open_connection(db_path) as conn, pytest.raises(sqlite3.IntegrityError):
+        conn.execute(
+            "INSERT INTO relationship_states (companion_id, familiarity, trust, affection, "
+            "reliance, conflict, updated_at) "
+            "VALUES ('astra', 0.5, 0.5, 1.5, 0.5, 0.5, '2026-09-24T00:00:00+00:00')"
+        )
+
+
+def test_state_tables_are_keyed_by_companion(db_path: Path) -> None:
+    """状态是角色的属性，不是每段会话的属性——同一 companion 只能有一行。"""
+    upgrade(db_path)
+
+    with open_connection(db_path) as conn:
+        conn.execute(
+            "INSERT INTO emotion_states (companion_id, happiness, energy, curiosity, "
+            "social_need, stress, embarrassment, excitement, updated_at) "
+            "VALUES ('astra', 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, '2026-09-24T00:00:00+00:00')"
+        )
+        with pytest.raises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO emotion_states (companion_id, happiness, energy, curiosity, "
+                "social_need, stress, embarrassment, excitement, updated_at) "
+                "VALUES ('astra', 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1, "
+                "'2026-09-24T00:00:00+00:00')"
+            )
 
 
 # ── 校验与失败路径 ──────────────────────────────────────

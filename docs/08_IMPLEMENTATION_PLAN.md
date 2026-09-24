@@ -100,6 +100,23 @@ user praises companion
  -> avatar event can reflect the new state
 ```
 
+### 实际落点（M3 已完成，见 ADR 0020）
+
+- **没有把 `state_delta` 加回 schema**：实测 +2.3s/轮，而模型每轮已经在输出
+  `emotion.primary` / `intensity`——增量改由"用户事件规则 + 已表达情绪"推导，
+  零额外 token。
+- **情绪比例靠拢目标水平，不是加法**：加法会形成正反馈把值顶到 1.0 并钉住
+  （有连续 50 轮的回归测试）。关系只累加、不衰减（`docs/06` §7 归为长期状态）。
+- **惰性衰减**：读时按 `now - updated_at` 算，不落库、不起调度器。
+- **状态变化只来自事件**（`docs/03` §5）：新增只读 `GET /v1/state`，
+  **没有写入端点**。
+- **事件**：`state.emotion.updated` / `state.relationship.updated`，
+  取代从未发布的 `assistant.state.updated`。
+- **顺带填上** M2 检索公式里恒为 0 的 `relationship` 分项。
+- **三个空桩全部填完**：`STUB_STAGES` 现在是空集，「桩账本」测试保留为守门人。
+- **未做**：`state.activity.updated`（`docs/03` 无实体）、`PersonaTrait`（无消费者）、
+  人格 TOML 驱动的情绪基线。
+
 ## 5. 阶段 4：Audio
 
 实现：

@@ -64,6 +64,7 @@ from astra.domain.memory import (
     expiry_for,
 )
 from astra.domain.ports import EmbeddingProvider, MemoryStore
+from astra.domain.state import clamp_unit
 
 _logger = logging.getLogger(__name__)
 
@@ -135,8 +136,18 @@ class MemoryService:
 
     # ── 检索 ────────────────────────────────────────────
 
-    async def retrieve(self, query: str, *, now: datetime | None = None) -> tuple[MemoryHit, ...]:
+    async def retrieve(
+        self,
+        query: str,
+        *,
+        now: datetime | None = None,
+        relationship_relevance: float = 0.0,
+    ) -> tuple[MemoryHit, ...]:
         """检索与 ``query`` 相关的记忆，按 `docs/06` §4 的公式排序。
+
+        ``relationship_relevance`` 是 `docs/06` §4 五项里的最后一项，由
+        ``Orchestrator`` 从关系状态算出后传进来（M3 起有值；M2 时恒为 0）。
+        这样 ``MemoryService`` 仍然不认识状态模块。
 
         任何失败都返回空元组（见模块文档字符串的不变量 1）。
         """
@@ -186,7 +197,12 @@ class MemoryService:
             )
 
         scored = [
-            self._score(memory, similarity=similarity_by_id.get(memory.id, 0.0), now=moment)
+            self._score(
+                memory,
+                similarity=similarity_by_id.get(memory.id, 0.0),
+                relationship=relationship_relevance,
+                now=moment,
+            )
             for memory in admitted
         ]
         ranked = tuple(
@@ -210,21 +226,20 @@ class MemoryService:
         )
         return ranked
 
-    def _score(self, memory: Memory, *, similarity: float, now: datetime) -> MemoryHit:
+    def _score(
+        self, memory: Memory, *, similarity: float, relationship: float, now: datetime
+    ) -> MemoryHit:
         weights = self._config.weights
         importance = memory.importance
         recency = _recency(memory.created_at, now)
         access = min(memory.access_count / _ACCESS_SATURATION, 1.0)
-        # M3 接入 RelationshipState 后这里才有值。**显式写 0 并注释**，
-        # 不假装有数据——权重已经在配置里，接入时不需要改结构。
-        relationship = 0.0
 
         components = {
             "semantic": similarity * weights.semantic,
             "importance": importance * weights.importance,
             "recency": recency * weights.recency,
             "access": access * weights.access,
-            "relationship": relationship * weights.relationship,
+            "relationship": clamp_unit(relationship) * weights.relationship,
         }
 
         return MemoryHit(memory=memory, score=sum(components.values()), components=components)

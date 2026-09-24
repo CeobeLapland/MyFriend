@@ -4,9 +4,9 @@ Local-first AI companion：长期记忆、稳定人格、实时语音、3D 形�
 
 本仓库是 **Astra** 的实现。规格文档在 [`docs/`](docs/)，Agent 执行规则见 [`AGENTS.md`](AGENTS.md)。
 
-当前进度：**M2 完成**（长期记忆 + 记忆管理 API）。
-`文字进 → LM Studio → 结构化回复出`，带持久化、实时事件流、降级，
-以及**跨重启的记忆**（提取 → 打分 → 去重 → 向量检索 → 用户可控）。
+当前进度：**M3 完成**（长期记忆 + 情绪/关系状态）。
+`文字进 → LM Studio → 结构化回复出`，带持久化、实时事件流、降级、
+**跨重启的记忆**，以及**会随互动变化的情绪与关系**。
 
 ## 环境要求
 
@@ -139,17 +139,46 @@ Invoke-RestMethod -Method Delete -Uri "http://127.0.0.1:8000/v1/memories/<id>"
 > 见 [ADR 0018](docs/decisions/0018-m2-memory-architecture.md)；
 > 管理 API 与用户控制见 [ADR 0019](docs/decisions/0019-memory-management-api.md)。
 
+## 状态（M3）
+
+她**有情绪，也记得你们的关系**——两者都会随互动变化，并影响下一轮的措辞。
+
+```powershell
+# 看当前状态（只读）
+Invoke-RestMethod http://127.0.0.1:8000/v1/state | ConvertTo-Json -Depth 4
+
+# 夸她一句
+$b = '{"content":"谢谢你，你真的太厉害了，我很喜欢你。"}'
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/v1/chat/turns `
+  -ContentType 'application/json; charset=utf-8' -Body ([Text.Encoding]::UTF8.GetBytes($b))
+
+# 再看一次：happiness 与 affection 都涨了
+Invoke-RestMethod http://127.0.0.1:8000/v1/state | ConvertTo-Json -Depth 4
+```
+
+**状态变化只来自事件**，没有写入端点（`docs/03` §5）：
+
+- **情绪**（7 维）由两条推导：用户消息的事件规则（被称赞 / 被批评 / 久别重逢），
+  以及模型**已经产出**的 `emotion`——后者定义"目标水平"，状态按比例靠拢过去。
+- **关系**（5 维）只由事件累积，**不衰减**。
+- **情绪会衰减**：按半衰期（默认 120 分钟）回到基线。衰减是**惰性**的（读时计算），
+  不需要后台任务。
+
+> 为什么不把 `state_delta` 加回 schema、为什么必须"比例靠拢"而不是加法、
+> 为什么关系不衰减——见 [ADR 0020](docs/decisions/0020-m3-state-model.md)。
+
 ## 开发者控制台
 
 浏览器打开 **http://127.0.0.1:8000/dev**
 
 左边是对话（可在 WebSocket / 同步两种模式间切换），右边是**原始事件流**。
-顶部是 health 实时状态（每 5 秒刷新），底部可展开看运行配置、协议词表，
-以及**记忆面板**（列表 / 单条删除 / 清空 / 启用开关）。
+顶部是 health 实时状态（每 5 秒刷新），底部可展开看运行配置、协议词表、
+**记忆面板**（列表 / 单条删除 / 清空 / 启用开关）与**状态面板**
+（7 维情绪 + 5 维关系的条形显示）。
 
 **这是开发工具，不是产品 UI**（见 [ADR 0017](docs/decisions/0017-developer-console.md)）。
-它看的是协议与运行状态——原始事件、health、stub、重试、耗时、记忆；产品 UI 看的是角色。
-两者不冲突，控制台在产品 UI 做出来之后依然有用。
+它看的是协议与运行状态——原始事件、health、stub、重试、耗时、记忆、状态；
+产品 UI 看的是角色。两者不冲突，控制台在产品 UI 做出来之后依然有用。
 
 - 零构建、零 npm、零新增依赖：单文件 HTML + 原生 JS。
 - **只在 `ASTRA_ENV=dev`（默认）时挂载**。如果你把 `ASTRA_HTTP_HOST` 改成
@@ -177,6 +206,20 @@ Invoke-RestMethod -Method Delete -Uri "http://127.0.0.1:8000/v1/memories/<id>"
 情绪 / 动作 / 音色风格的**白名单不在这个文件里**，它们在
 `src/astra/domain/vocabulary.py`：那是与 Unity 端的协议契约，必须有单一真相，
 并通过 `GET /v1/config` 分发给客户端。
+
+## 验收（M3）
+
+```powershell
+uv run pytest -q                          # 全绿（含状态的性质测试：不饱和、会衰减、并发不丢更新）
+uv run ruff check . ; uv run ruff format --check . ; uv run mypy src
+
+# 端到端 4 步：
+#   0. GET /v1/state → 记下初始 happiness
+#   1. 说"谢谢你，你真的太厉害了，我很喜欢你。"
+#   2. GET /v1/state → happiness 与 affection 都上升
+#   3. 看 /dev 的原始事件流：state.emotion.updated（带新值与增量）与 avatar.expression.set
+#   4. 隔一段时间再问一次 → 情绪已向 baseline 回落（惰性衰减）
+```
 
 ## 验收（M2）
 
@@ -257,9 +300,13 @@ src/astra/
   即可把这 2.4 秒拿回来。
 - **同一会话的 turn 是串行的**：一次长 LLM 调用会阻塞该会话的下一轮。
   单用户场景可接受，M4 做 interruption 时重新评估。
-- **`apply_state_delta` 仍是显式空桩**（M3 实现）。`TurnResult.stubs_used` 会如实
-  上报它，`tests/unit/test_orchestrator.py` 有一条「桩账本」断言——
-  M3 实现它时会变红，强制显式更新。
+- **流水线已无空桩**（`stubs_used` 恒为空）。「桩账本」测试保留着，
+  M6 加 `tool_calls` 时如果又留了桩会立刻变红。
+- **状态的事件规则是词面匹配**（与 no-store 同类局限）：说「你真是个小天才」
+  这类变体不会被识别成称赞。好在状态增量只是**小 nudge**，漏判的代价远低于
+  写错记忆——漏判就是"情绪没动"，不会出现错误内容。
+- **情绪衰减半衰期（120 分钟）是手感值**，缺乏数据支撑。它和
+  `ASTRA_STATE_EMOTION_PULL` 都值得用 `docs/10` §5 的固定对话集来调。
 - **no-store 是短语匹配，不是语义理解**。说「不要记住 / 别记住 / 不用记 /
   忘掉这件事 / 不要记录」会生效，但「帮我留个印象」这类变体会漏判。
   漏判时可以事后删：`DELETE /v1/memories/{id}`。

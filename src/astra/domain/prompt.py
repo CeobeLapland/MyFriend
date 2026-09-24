@@ -11,14 +11,18 @@
 1       Identity                    实现
 2       Stable personality          实现（traits + behavior rules）
 3       Speech style                实现
-4       Current state               **未实现** —— M3 在 Layer 3 之后插入
-5       Relevant memories           **M2 实现**（在 Layer 3 之后插入）
+4       Current state               **M3 实现**（在 Layer 3 之后插入）
+5       Relevant memories           **M2 实现**（在 Layer 4 之后插入）
 6       Current conversation        走 ``LLMRequest.messages``，不进 system prompt
 7       Tool definitions            **未实现** —— M6 在 Layer 5 之后插入
 8       Output schema               实现
 ======  ==========================  ==========================================
 
 未实现的层**整段省略**，不输出空标题——空标题会让模型以为存在相应信息。
+
+关于 Layer 4：渲染**全部 5 个关系维度**，而 `docs/05` §4 的示例只列了 3 个
+（familiarity / trust / affection）。示例是"格式建议"，而 `conflict` 不告诉模型
+的话，"吵过一架之后语气该怎么变"就没有依据了（ADR 0020）。
 
 关于 Layer 8：这里只放**人话版字段说明 + 英文词表清单**，不贴整段 JSON Schema。
 硬约束交给 ``response_format`` 的 ``json_schema``；词表必须写进 prompt，因为实测
@@ -33,6 +37,7 @@ from datetime import datetime
 
 from astra.domain.memory import Memory
 from astra.domain.persona import Persona
+from astra.domain.state import EMOTION_DIMS, RELATIONSHIP_DIMS, StateSnapshot
 from astra.domain.vocabulary import (
     ACTION_CHOICES,
     EMOTION_CHOICES,
@@ -50,6 +55,7 @@ SECTION_HARD_CONSTRAINTS = "HARD CONSTRAINTS"
 SECTION_IDENTITY = "IDENTITY"
 SECTION_PERSONALITY = "PERSONALITY"
 SECTION_SPEECH_STYLE = "SPEECH STYLE"
+SECTION_CURRENT_STATE = "CURRENT STATE"
 SECTION_RELEVANT_MEMORIES = "RELEVANT MEMORIES"
 SECTION_OUTPUT_FORMAT = "OUTPUT FORMAT"
 
@@ -68,21 +74,22 @@ _MEMORY_LABEL = "[MEMORY]"
 def build_system_prompt(
     persona: Persona,
     *,
+    state: StateSnapshot | None = None,
     memories: Sequence[Memory] = (),
     memory_max_chars: int | None = None,
 ) -> str:
-    """把人格（可选：检索到的记忆）组装成 system prompt。
+    """把人格（可选：状态、检索到的记忆）组装成 system prompt。
 
     Args:
         persona: 人格配置。
+        state: 当前情绪 / 关系状态（M3）。``None`` 时整层省略。
         memories: 本轮检索到的记忆，**调用方负责排好序**（``MemoryService`` 按
             `docs/06` §4 的总分降序、同分按 id 升序），这样同一组记忆的输出
             逐字节确定。
         memory_max_chars: 记忆层的字符预算；超出时从**末尾**（分最低的那条）
             开始丢弃。``None`` 表示不限制。
 
-    M3/M6 会在 Layer 3 与 Layer 8 之间继续插入新层（状态 / 工具），插入点见
-    模块文档字符串。
+    M6 会在 Layer 5 与 Layer 8 之间继续插入工具层，插入点见模块文档字符串。
     """
     sections = [
         _hard_constraints(persona),
@@ -91,12 +98,35 @@ def build_system_prompt(
         _speech_style(persona),
     ]
 
+    state_section = _current_state(state)
+    if state_section is not None:
+        sections.append(state_section)
+
     memory_section = _relevant_memories(memories, max_chars=memory_max_chars)
     if memory_section is not None:
         sections.append(memory_section)
 
     sections.append(_output_format())
     return SECTION_SEPARATOR.join(sections)
+
+
+def _current_state(state: StateSnapshot | None) -> str | None:
+    """Layer 4：当前状态。``None`` 时返回 ``None``（整层省略）。
+
+    `docs/05` §4 明文："LLM 可以利用这些状态改变措辞，但不能在自然语言里直接告诉
+    用户内部数值"——所以数值只出现在 system prompt 里，而那条禁止本身写在 Layer 0
+    （M1 就写好了）。
+    """
+    if state is None:
+        return None
+
+    lines = [SECTION_CURRENT_STATE, "Mood:"]
+    lines.extend(f"- {name}: {state.emotion.as_dict()[name]:.2f}" for name in EMOTION_DIMS)
+    lines.append("Relationship:")
+    lines.extend(
+        f"- {name}: {state.relationship.as_dict()[name]:.2f}" for name in RELATIONSHIP_DIMS
+    )
+    return LINE_SEPARATOR.join(lines)
 
 
 def _hard_constraints(persona: Persona) -> str:

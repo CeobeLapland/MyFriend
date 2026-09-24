@@ -24,6 +24,7 @@ from astra.api.routes.conversations import router as conversations_router
 from astra.api.routes.dev import router as dev_router
 from astra.api.routes.health import router as health_router
 from astra.api.routes.memories import router as memories_router
+from astra.api.routes.state import router as state_router
 from astra.application.conversation_service import ConversationService
 from astra.application.event_bus import EventBus
 from astra.application.health_service import HealthService
@@ -34,6 +35,7 @@ from astra.application.memory_service import (
 )
 from astra.application.orchestrator import Orchestrator, TurnConfig
 from astra.application.prompt_builder import PromptBudget
+from astra.application.state_service import StateConfig, StateService
 from astra.domain.errors import ConversationNotFoundError
 from astra.domain.health import DATABASE_COMPONENT
 from astra.domain.persona import Persona
@@ -42,6 +44,7 @@ from astra.infrastructure.db.conversation_repository import SQLiteConversationRe
 from astra.infrastructure.db.health import DatabaseHealthProbe
 from astra.infrastructure.db.memory_repository import VECTOR_INDEX_DIM, SQLiteMemoryStore
 from astra.infrastructure.db.migrations import upgrade
+from astra.infrastructure.db.state_repository import SQLiteStateStore
 from astra.infrastructure.persona.toml_loader import load_persona
 from astra.providers.lmstudio.client import LMStudioProvider
 from astra.providers.lmstudio.embeddings import LMStudioEmbeddingProvider
@@ -101,6 +104,7 @@ def create_app(
     app.include_router(chat_router)
     app.include_router(conversations_router)
     app.include_router(memories_router)
+    app.include_router(state_router)
     app.include_router(chat_ws_router)
 
     # 开发者控制台只在 dev 环境挂载——绑到 0.0.0.0 时把 ASTRA_ENV 设成 prod 即可关掉
@@ -153,11 +157,13 @@ def _install_conversation_stack(
         idle_timeout=timedelta(minutes=settings.conversation_idle_minutes),
     )
 
+    # 事件总线是单进程内的广播点：Orchestrator / StateService 往里发，
+    # ConnectionManager 往外推
+    bus = EventBus()
+
     provider = llm if llm is not None else _build_llm_provider(settings)
     memories = _build_memory_service(settings, embeddings)
-
-    # 事件总线是单进程内的广播点：Orchestrator 往里发，ConnectionManager 往外推
-    bus = EventBus()
+    state = _build_state_service(settings, bus)
 
     orchestrator = Orchestrator(
         llm=provider,
@@ -165,6 +171,7 @@ def _install_conversation_stack(
         persona=persona,
         bus=bus,
         memory=memories,
+        state=state,
         config=TurnConfig(
             user_id=settings.user_id,
             companion_id=settings.companion_id,
@@ -183,8 +190,26 @@ def _install_conversation_stack(
     app.state.conversations = conversations
     app.state.orchestrator = orchestrator
     app.state.memories = memories
+    app.state.state_service = state
     app.state.event_bus = bus
     app.state.connection_manager = ConnectionManager(bus)
+
+
+def _build_state_service(settings: Settings, bus: EventBus) -> StateService:
+    """装配状态子系统。
+
+    状态**没有"未配置"这一档**：情绪与关系是这个角色的基本属性，不需要外部服务，
+    所以永远装配。``state_emotion_pull=0`` 可以关掉"情绪随表达变化"那条路径。
+    """
+    return StateService(
+        SQLiteStateStore(settings.db_path),
+        config=StateConfig(
+            companion_id=settings.companion_id,
+            decay_half_life_minutes=settings.state_emotion_decay_half_life_minutes,
+            pull=settings.state_emotion_pull,
+        ),
+        bus=bus,
+    )
 
 
 def _build_memory_service(

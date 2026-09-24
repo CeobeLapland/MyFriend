@@ -38,12 +38,20 @@ class EventType(StrEnum):
 
     # ── Assistant ───────────────────────────────────────
     ASSISTANT_TEXT_COMPLETED = "assistant.text.completed"
-    ASSISTANT_STATE_UPDATED = "assistant.state.updated"
 
     # ── Memory（M2 起）──────────────────────────────────
     MEMORY_CANDIDATE_CREATED = "memory.candidate.created"
     MEMORY_CREATED = "memory.created"
     MEMORY_RETRIEVED = "memory.retrieved"
+    MEMORY_UPDATED = "memory.updated"
+    MEMORY_ARCHIVED = "memory.archived"
+    MEMORY_DELETED = "memory.deleted"
+
+    # ── State（M3 起）───────────────────────────────────
+    #: 用 `docs/04` §4 的具体名，而不是 §3 里那个泛化的 ``assistant.state.updated``
+    #: ——后者已移除（从未发布过，留着是死登记）。见 ADR 0020。
+    STATE_EMOTION_UPDATED = "state.emotion.updated"
+    STATE_RELATIONSHIP_UPDATED = "state.relationship.updated"
 
     # ── Audio（M4 起）───────────────────────────────────
     STT_FINAL = "stt.final"

@@ -14,6 +14,7 @@ from astra.domain.llm import LLMMessage
 from astra.domain.memory import Memory
 from astra.domain.persona import Persona
 from astra.domain.prompt import build_system_prompt
+from astra.domain.state import StateSnapshot
 
 #: 只把这两种角色送进 LLM。``messages`` 表还允许 system / tool（M6），
 #: 它们不是"当前对话"的一部分。
@@ -74,6 +75,7 @@ def build_conversation_context(
     history: Sequence[Message],
     user_text: str,
     budget: PromptBudget,
+    state: StateSnapshot | None = None,
     memories: Sequence[Memory] = (),
 ) -> ConversationContext:
     """组装 system prompt 与消息列表。
@@ -82,6 +84,7 @@ def build_conversation_context(
 
     ``memories`` 由 ``MemoryService`` 检索并按总分排好序——这里不重排，否则
     "同一组输入产出逐字节相同的 prompt" 这条（`docs/10` §2）会依赖两份排序逻辑。
+    ``state`` 是 ``StateService`` 读到的快照（已含惰性衰减）。
     """
     window = trim_history(
         [message for message in history if message.role in _CONVERSATION_ROLES],
@@ -96,6 +99,7 @@ def build_conversation_context(
     return ConversationContext(
         system_prompt=build_system_prompt(
             persona,
+            state=state,
             memories=memories,
             memory_max_chars=budget.memory_max_chars or None,
         ),

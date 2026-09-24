@@ -18,6 +18,7 @@ from astra.domain.conversation import Conversation, Message
 from astra.domain.health import ComponentHealth
 from astra.domain.llm import LLMRequest, LLMResponse
 from astra.domain.memory import Memory, MemoryFilter
+from astra.domain.state import StateSnapshot
 
 
 class HealthProbe(Protocol):
@@ -187,4 +188,25 @@ class MemoryStore(Protocol):
 
     async def set_flag(self, key: str, value: str, *, at: datetime) -> None:
         """写 ``app_flags``。"""
+        ...
+
+
+class StateStore(Protocol):
+    """情绪 / 关系状态的持久化端口（M3）。
+
+    **只有"读整份快照"和"写整份快照"两个动作**——状态是每个 companion 一行，
+    不存在部分更新的语义；把衰减、增量、clamp 全放在 ``StateService`` 里，
+    仓储只负责搬运。这样"状态是怎么变的"只有一个地方可读。
+    """
+
+    async def load(self, companion_id: str) -> StateSnapshot | None:
+        """读整份快照；**从没有过记录**时返回 ``None``（调用方用基线兜底）。"""
+        ...
+
+    async def save(self, companion_id: str, snapshot: StateSnapshot) -> None:
+        """原子地写回两份状态（同一个事务）。"""
+        ...
+
+    async def reset(self, companion_id: str) -> None:
+        """删掉记录。下次读会回到基线（调试用）。"""
         ...

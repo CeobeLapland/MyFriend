@@ -19,7 +19,10 @@ from tests.integration.conftest import LiveServer, default_llm
 
 _TERMINATORS = {EventType.TURN_COMPLETED.value, EventType.TURN_FAILED.value}
 
-#: 每一轮 turn 的核心事件序列（M1b 验收标准）
+#: 每一轮 turn 的核心事件序列（M1b 验收标准 + M3 的状态事件）
+#:
+#: ``state.emotion.updated`` 排在 avatar 之后、turn.completed 之前：状态与记忆都是
+#: **事后记账**，必须排在回复相关的事件之后（回复要尽快到达用户，ADR 0020）。
 _CORE_SEQUENCE = [
     EventType.TURN_STARTED.value,
     EventType.CONVERSATION_MESSAGE_CREATED.value,
@@ -27,6 +30,7 @@ _CORE_SEQUENCE = [
     EventType.ASSISTANT_TEXT_COMPLETED.value,
     EventType.AVATAR_EXPRESSION_SET.value,
     EventType.AVATAR_ACTION_PLAY.value,
+    EventType.STATE_EMOTION_UPDATED.value,
     EventType.TURN_COMPLETED.value,
 ]
 

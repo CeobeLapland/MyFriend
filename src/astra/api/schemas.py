@@ -194,6 +194,23 @@ class MemoryExportBody(BaseModel):
     memories: list[MemoryBody]
 
 
+# ── State（M3）──────────────────────────────────────────
+
+
+class StateBody(BaseModel):
+    """``GET /v1/state`` 的只读快照。
+
+    **没有写入端点**：`docs/03` §5 明文要求"状态变化应来自事件，而不是 LLM 自己
+    直接写数据库"。客户端只能看，不能改。
+    """
+
+    companion_id: str
+    emotion: dict[str, float]
+    relationship: dict[str, float]
+    emotion_updated_at: datetime
+    relationship_updated_at: datetime
+
+
 class ErrorBody(BaseModel):
     code: str
     message: str

@@ -19,6 +19,7 @@ from astra.application.conversation_service import ConversationService
 from astra.application.health_service import HealthService
 from astra.application.memory_service import MemoryService
 from astra.application.orchestrator import Orchestrator
+from astra.application.state_service import StateService
 from astra.domain.persona import Persona
 from astra.settings import Settings
 
@@ -37,6 +38,10 @@ def get_conversations(connection: HTTPConnection) -> ConversationService:
 
 def get_memory_service(connection: HTTPConnection) -> MemoryService:
     return cast("MemoryService", connection.app.state.memories)
+
+
+def get_state_service(connection: HTTPConnection) -> StateService:
+    return cast("StateService", connection.app.state.state_service)
 
 
 def get_connection_manager(connection: HTTPConnection) -> ConnectionManager:

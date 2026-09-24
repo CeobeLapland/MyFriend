@@ -199,7 +199,8 @@ turn.started
 conversation.message.created
 assistant.text.delta
 assistant.text.completed
-assistant.state.updated
+state.emotion.updated
+state.relationship.updated
 memory.retrieval.completed
 voice.synthesis.started
 voice.audio.chunk
@@ -211,7 +212,9 @@ turn.failed
 error.protocol
 ```
 
-一轮完整对话的实际序列（M1b 已实现，新会话的第一轮会多一条 `conversation.created` 打头）：
+一轮完整对话的实际序列（M1b 起，新会话的第一轮会多一条 `conversation.created` 打头；
+M3 起多一条 `state.emotion.updated`，排在回复相关事件**之后**——状态与记忆都是
+事后记账，不该拖慢回复）：
 
 ```text
 turn.started
@@ -220,8 +223,12 @@ turn.started
 → assistant.text.completed
 → avatar.expression.set
 → avatar.action.play
+→ state.emotion.updated          # 仅在该轮情绪确实变化时出现
 → turn.completed
 ```
+
+> `assistant.state.updated` 是 M1 时的泛化名，**已由上面两个具体名取代**
+> （它从未被发布过）。见 `decisions/0020-m3-state-model.md`。
 
 `error.protocol` 只在客户端发来非法帧时出现，且**不会关闭连接**。
 

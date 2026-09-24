@@ -124,6 +124,14 @@ class Settings(BaseSettings):
     #: 注入 prompt 的记忆层字符预算
     memory_context_max_chars: int = Field(default=2000, ge=1)
 
+    # ── State（M3）──────────────────────────────────────
+    #: 情绪衰减半衰期（分钟）。**这个值缺乏依据**——先给 120 分钟，
+    #: 需要 docs/10 §5 的固定对话集来调参（ADR 0020）。
+    state_emotion_decay_half_life_minutes: int = Field(default=120, gt=0)
+    #: 朝"已表达情绪的目标水平"靠拢的比例。0 = 完全不受表达影响。
+    #: **不能改成加法**——加法会形成正反馈把情绪顶到 1.0（ADR 0020）。
+    state_emotion_pull: float = Field(default=0.15, ge=0.0, le=1.0)
+
     # ── 检索权重（docs/06 §4）───────────────────────────
     #: 文档明文要求"放在配置中，不能硬编码在多个文件"。**五者之和必须为 1.0**，
     #: 否则排序分的量纲会随配置漂移（见下方 validator）。
