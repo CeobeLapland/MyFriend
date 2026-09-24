@@ -14,6 +14,7 @@ ask_llm                      实现（按 ADR 0011 的重试矩阵，最多重�
 validate_response            实现（``response_parser``）
 apply_state_delta            M3 实现（事件规则 + 情绪靠拢 → 落库 + 发事件）
 persist_conversation         实现（一个事务写 user + assistant）
+synthesize_speech            M4 实现（可选；TTS → 二进制音频帧 → tts.* 事件）
 enqueue_memory_extraction    M2 实现（候选打分 / 去重 / 落库）
 dispatch_events              M1b 接入事件总线
 ===========================  ==============================================
@@ -26,12 +27,20 @@ dispatch_events              M1b 接入事件总线
 写反了会"用上一轮的状态回答这一轮"，而且很难看出来。这与 `docs/02` §2.2 的
 流水线顺序一致。
 
-**三个子系统的失败都不影响 turn**（记忆、状态、以及将来的工具）：各自的异常都在
+**M4 的 TTS 排在 ``turn.completed`` 之前**：`docs/04` §3 的既定序列要求
+``turn.completed`` 收尾。所以语音事件是 turn 的一部分，不是事后的旁支。
+它由 ``TurnRequest.synthesize_audio`` 触发（只有语音模式才合成），
+**失败绝不让 turn 失败**（`docs/10` §4「TTS failure」）。
+
+**三个子系统的失败都不影响 turn**（记忆、状态、以及 TTS）：各自的异常都在
 自己的边界内被吞掉并记日志。LLM 已经成功，用户必须拿到回复（ADR 0014）。
 
 **降级策略**（ADR 0014）：LLM 不可用**不抛 5xx**，而是返回一个
 ``TurnResult.failure`` + 由代码拥有的诚实回复，并且**仍然把用户消息持久化**，
 否则重连的客户端会看到一条悬空的用户消息。
+
+**被打断时发 ``turn.interrupted``**（M4）：``run_turn`` 被 ``cancel()`` 时先发事件
+再重新抛出 ``CancelledError``，这样客户端知道"这一轮不完整"而不是干等。
 """
 
 from __future__ import annotations
@@ -55,6 +64,7 @@ from astra.application.prompt_builder import (
 )
 from astra.application.response_parser import ParseOutcome, parse_assistant_response
 from astra.application.state_service import StateService
+from astra.domain.audio import TTSRequest
 from astra.domain.conversation import Role
 from astra.domain.errors import (
     AstraError,
@@ -68,7 +78,7 @@ from astra.domain.ids import new_id
 from astra.domain.llm import LLMMessage, LLMRequest, LLMResponse, ReasoningEffort
 from astra.domain.memory import Memory
 from astra.domain.persona import Persona
-from astra.domain.ports import LLMProvider
+from astra.domain.ports import LLMProvider, TTSProvider
 from astra.domain.response import AssistantResponse
 from astra.domain.state import StateSnapshot, baseline_emotion, baseline_relationship
 
@@ -113,6 +123,10 @@ class TurnConfig:
     reasoning_effort: ReasoningEffort
     history_budget: PromptBudget
     input_max_chars: int = 4000
+    #: TTS 预训练音色（M4）。``tts=None`` 时用不到。
+    tts_voice: str = ""
+    #: 单个二进制音频帧的字节上限（M4）。太大客户端首帧延迟高，太小帧数多。
+    audio_chunk_bytes: int = 65536
 
 
 @dataclass(frozen=True, slots=True)
@@ -124,6 +138,9 @@ class TurnRequest:
     #: 由调用方预先分配（``POST /v1/chat/messages`` 要在 202 里先返回它）。
     #: 为 ``None`` 时由 Orchestrator 生成。
     turn_id: str | None = None
+    #: M4：这一轮要不要把回复合成成语音。由 WS 层按会话的 voice mode 决定；
+    #: HTTP 调试端点恒为 ``False``（不需要合成，白等 2–4 秒）。
+    synthesize_audio: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -180,6 +197,7 @@ class Orchestrator:
         bus: EventBus | None = None,
         memory: MemoryService | None = None,
         state: StateService | None = None,
+        tts: TTSProvider | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._llm = llm
@@ -190,6 +208,9 @@ class Orchestrator:
         self._memory = memory
         #: 为 ``None`` 时状态子系统整体缺席（Layer 4 省略、状态不更新），turn 照常
         self._state = state
+        #: 为 ``None`` 时语音合成整体缺席（不发 ``tts.*`` 事件），turn 照常。
+        #: 这也是 ``ASTRA_TTS_PROVIDER=none`` 时的形态。
+        self._tts = tts
         #: 没有订阅者时 publish 是空操作，所以默认自带一个 bus 不会产生副作用
         self._bus = bus if bus is not None else EventBus()
         self._clock = clock if clock is not None else (lambda: datetime.now(tz=UTC))
@@ -200,9 +221,16 @@ class Orchestrator:
         self._conversation_locks: dict[str, asyncio.Lock] = {}
 
     async def run_turn(self, request: TurnRequest) -> TurnResult:
-        """执行一次完整 turn。任何受控失败都体现在 ``TurnResult.failure`` 里。"""
+        """执行一次完整 turn。任何受控失败都体现在 ``TurnResult.failure`` 里。
+
+        **被打断时抛 ``CancelledError``**（M4）：取消本 task 的调用方
+        （``chat_ws`` 的 barge-in）会让这里先发一条 ``turn.interrupted`` 再重新抛出。
+        发事件是必要的——客户端得知道"这一轮不完整"，否则它会一直等
+        ``turn.completed``。
+        """
         started = time.perf_counter()
         turn_id = request.turn_id or new_id()
+        correlation_id = request.correlation_id or turn_id
 
         try:
             async with self._resolve_lock:
@@ -215,11 +243,19 @@ class Orchestrator:
                 exc,
                 started,
                 retries=0,
-                correlation_id=request.correlation_id or turn_id,
+                correlation_id=correlation_id,
             )
 
-        async with self._lock_for(resolved.conversation.id):
-            return await self._execute(request, resolved, turn_id=turn_id, started=started)
+        try:
+            async with self._lock_for(resolved.conversation.id):
+                return await self._execute(request, resolved, turn_id=turn_id, started=started)
+        except asyncio.CancelledError:
+            self._publish(
+                EventType.TURN_INTERRUPTED,
+                correlation_id,
+                {"turn_id": turn_id, "conversation_id": resolved.conversation.id},
+            )
+            raise
 
     # ── 流水线 ──────────────────────────────────────────
 
@@ -287,6 +323,13 @@ class Orchestrator:
             correlation_id, assistant_message.id, conversation_id, turn_id, Role.ASSISTANT
         )
         self._publish_assistant_output(correlation_id, turn_id, outcome.response)
+
+        # M4：语音排在状态/记忆之前，是为了让 tts.* 事件落在
+        # assistant.text.completed 与 turn.completed 之间（docs/04 §3 的序列）。
+        # 合成要 2–4 秒，而状态与记忆都是"事后记账"，晚一点无所谓。
+        await self._synthesize_speech(
+            request, outcome, turn_id=turn_id, correlation_id=correlation_id
+        )
 
         # 状态与记忆都排在事件之后：回复要尽快到达用户，落库是事后记账。
         # 放在 append_turn 之后是为了让候选拿到 user_message.id 作为 provenance。
@@ -455,6 +498,107 @@ class Orchestrator:
                 "state update failed; turn is unaffected",
                 extra={"event": "state.failed", "detail": {"stage": "orchestrator.apply"}},
             )
+
+    # ── 语音（M4）───────────────────────────────────────
+
+    async def _synthesize_speech(
+        self,
+        request: TurnRequest,
+        outcome: ParseOutcome,
+        *,
+        turn_id: str,
+        correlation_id: str,
+    ) -> bool:
+        """把回复合成为语音，并通过二进制帧推给客户端。返回是否成功。
+
+        事件序列（`docs/04` §3 的 M4 版）：
+
+        ```text
+        tts.started  {encoding, sample_rate, channels, text, chunk_count, duration_ms}
+        （若干二进制帧，不进事件序列）
+        tts.completed {turn_id, status, duration_ms}
+        ```
+
+        **``tts.started`` 排在合成之后、推流之前**：客户端必须先知道格式才能
+        正确解释紧随其后的二进制帧，而格式只有合成完才知道（provider 可能换采样率）。
+
+        **任何失败都不让 turn 失败**（`docs/10` §4「TTS failure」）：
+        TTS 挂了只发一条 ``tts.completed{status:"failed"}``，文本回复已经送达。
+        连"没配置 TTS"与"这一轮不要语音"都直接返回 ``False``，不发任何事件。
+        """
+        if self._tts is None or not request.synthesize_audio:
+            return False
+
+        reply = outcome.response.reply
+        if not reply.strip():
+            # 空回复没必要合成（TTSRequest 也会拒绝空文本）
+            return False
+
+        started = time.perf_counter()
+        try:
+            artifact = await self._tts.synthesize(
+                TTSRequest(
+                    text=reply,
+                    voice_id=self._config.tts_voice,
+                    speed=outcome.response.voice.speed,
+                )
+            )
+        except AstraError as exc:
+            _logger.warning(
+                "tts failed; the turn is unaffected",
+                extra={"event": "tts.failed", "detail": {"code": exc.code.value}},
+            )
+            self._publish(
+                EventType.TTS_COMPLETED,
+                correlation_id,
+                {
+                    "turn_id": turn_id,
+                    "status": "failed",
+                    "code": exc.code.value,
+                    "synthesis_ms": _elapsed_ms(started),
+                },
+            )
+            return False
+
+        # 合成耗时是 `docs/10` §6 要求的延迟指标之一；duration_ms 是**音频时长**，
+        # 两者常被混淆，所以分开报。
+        synthesis_ms = _elapsed_ms(started)
+        _logger.info(
+            "tts finished",
+            extra={
+                "event": "tts.synthesis",
+                "duration_ms": synthesis_ms,
+                "detail": {"audio_ms": artifact.duration_ms, "chars": len(reply)},
+            },
+        )
+
+        chunks = _chunk_bytes(artifact.pcm, self._config.audio_chunk_bytes)
+        self._publish(
+            EventType.TTS_STARTED,
+            correlation_id,
+            {
+                "turn_id": turn_id,
+                "text": reply,
+                **artifact.format.to_dict(),
+                "chunk_count": len(chunks),
+                "synthesis_ms": synthesis_ms,
+                "duration_ms": artifact.duration_ms,
+            },
+        )
+        for chunk in chunks:
+            self._bus.publish_binary(chunk)
+        self._publish(
+            EventType.TTS_COMPLETED,
+            correlation_id,
+            {
+                "turn_id": turn_id,
+                "status": "ok",
+                "chunk_count": len(chunks),
+                "synthesis_ms": synthesis_ms,
+                "duration_ms": artifact.duration_ms,
+            },
+        )
+        return True
 
     # ── 记忆（M2）───────────────────────────────────────
 
@@ -709,6 +853,17 @@ def normalize_input(text: str, *, max_chars: int) -> str:
         normalized = normalized[:max_chars]
 
     return normalized
+
+
+def _chunk_bytes(payload: bytes, size: int) -> tuple[bytes, ...]:
+    """把音频切成 WS 二进制帧。
+
+    ``size`` 是单帧上限（``Settings.audio_chunk_max_bytes``）。切小了帧数多、
+    切大了客户端首帧延迟高；64 KiB 在 24 kHz 单声道下约 1.3 秒。
+    """
+    if size <= 0:  # pragma: no cover - Settings 已经保证 >= 1024
+        return (payload,)
+    return tuple(payload[index : index + size] for index in range(0, len(payload), size))
 
 
 def _elapsed_ms(started: float) -> float:

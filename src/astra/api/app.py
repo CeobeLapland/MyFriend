@@ -37,15 +37,18 @@ from astra.application.orchestrator import Orchestrator, TurnConfig
 from astra.application.prompt_builder import PromptBudget
 from astra.application.state_service import StateConfig, StateService
 from astra.domain.errors import ConversationNotFoundError
-from astra.domain.health import DATABASE_COMPONENT
+from astra.domain.health import DATABASE_COMPONENT, STT_COMPONENT, TTS_COMPONENT
 from astra.domain.persona import Persona
-from astra.domain.ports import EmbeddingProvider, HealthProbe, LLMProvider
+from astra.domain.ports import EmbeddingProvider, HealthProbe, LLMProvider, STTProvider, TTSProvider
 from astra.infrastructure.db.conversation_repository import SQLiteConversationRepository
 from astra.infrastructure.db.health import DatabaseHealthProbe
 from astra.infrastructure.db.memory_repository import VECTOR_INDEX_DIM, SQLiteMemoryStore
 from astra.infrastructure.db.migrations import upgrade
 from astra.infrastructure.db.state_repository import SQLiteStateStore
 from astra.infrastructure.persona.toml_loader import load_persona
+from astra.providers.cosyvoice.health import CosyVoiceHealthProbe
+from astra.providers.cosyvoice.stt import CosyVoiceSTTProvider
+from astra.providers.cosyvoice.tts import CosyVoiceTTSProvider
 from astra.providers.lmstudio.client import LMStudioProvider
 from astra.providers.lmstudio.embeddings import LMStudioEmbeddingProvider
 from astra.providers.lmstudio.health import LMStudioHealthProbe
@@ -54,6 +57,7 @@ from astra.settings import Settings
 _logger = logging.getLogger(__name__)
 
 _LMSTUDIO = "lmstudio"
+_COSYVOICE = "cosyvoice"
 
 
 def create_app(
@@ -61,6 +65,8 @@ def create_app(
     *,
     llm: LLMProvider | None = None,
     embeddings: EmbeddingProvider | None = None,
+    stt: STTProvider | None = None,
+    tts: TTSProvider | None = None,
 ) -> FastAPI:
     """按给定配置构造 FastAPI 应用。
 
@@ -69,6 +75,8 @@ def create_app(
         llm: 可选的 provider 注入点。为 ``None`` 时按 ``settings.llm_provider``
             构造；显式注入主要用于测试，也方便将来接别的后端。
         embeddings: 可选的向量化 provider 注入点，语义同上。
+        stt: 可选的语音识别 provider 注入点，语义同上。
+        tts: 可选的语音合成 provider 注入点，语义同上。
 
     Raises:
         PersonaLoadError: 人格文件缺失或非法——人格是应用的身份，缺失应当快速失败。
@@ -92,7 +100,7 @@ def create_app(
     app = FastAPI(title="Astra", version=__version__, lifespan=lifespan)
 
     _install_health(app, settings)
-    _install_conversation_stack(app, settings, persona, llm, embeddings)
+    _install_conversation_stack(app, settings, persona, llm, embeddings, stt, tts)
 
     app.state.settings = settings
     app.state.persona = persona
@@ -126,7 +134,8 @@ async def _conversation_not_found_handler(_request: Request, exc: Exception) -> 
 def _install_health(app: FastAPI, settings: Settings) -> None:
     probes: list[HealthProbe] = [DatabaseHealthProbe(settings.db_path)]
 
-    # provider=none 时不注册 LLM 探针，/health 保持 M0 的 not_configured（ADR 0006）
+    # provider=none 时不注册探针，/health 保持 M0 的 not_configured（ADR 0006）。
+    # **只改这些组件的值，不改 key 集合**——stt/tts 始终在 CANONICAL_COMPONENTS 里。
     if settings.llm_provider == _LMSTUDIO:
         probes.append(
             LMStudioHealthProbe(
@@ -136,6 +145,20 @@ def _install_health(app: FastAPI, settings: Settings) -> None:
                 timeout_s=settings.health_probe_timeout_s,
             )
         )
+
+    # STT 与 TTS 是同一个 Gradio 进程，探针逻辑共用，只是组件名不同
+    for component, provider_name in (
+        (STT_COMPONENT, settings.stt_provider),
+        (TTS_COMPONENT, settings.tts_provider),
+    ):
+        if provider_name == _COSYVOICE:
+            probes.append(
+                CosyVoiceHealthProbe(
+                    component=component,
+                    base_url=settings.tts_base_url,
+                    timeout_s=settings.health_probe_timeout_s,
+                )
+            )
 
     required = frozenset({DATABASE_COMPONENT}) if settings.health_db_required else frozenset()
 
@@ -148,6 +171,8 @@ def _install_conversation_stack(
     persona: Persona,
     llm: LLMProvider | None,
     embeddings: EmbeddingProvider | None,
+    stt: STTProvider | None,
+    tts: TTSProvider | None,
 ) -> None:
     repository = SQLiteConversationRepository(settings.db_path)
     conversations = ConversationService(
@@ -164,6 +189,8 @@ def _install_conversation_stack(
     provider = llm if llm is not None else _build_llm_provider(settings)
     memories = _build_memory_service(settings, embeddings)
     state = _build_state_service(settings, bus)
+    tts = tts if tts is not None else _build_tts_provider(settings)
+    stt = stt if stt is not None else _build_stt_provider(settings)
 
     orchestrator = Orchestrator(
         llm=provider,
@@ -172,6 +199,7 @@ def _install_conversation_stack(
         bus=bus,
         memory=memories,
         state=state,
+        tts=tts,
         config=TurnConfig(
             user_id=settings.user_id,
             companion_id=settings.companion_id,
@@ -184,6 +212,8 @@ def _install_conversation_stack(
                 max_history_chars=settings.llm_history_max_chars,
                 memory_max_chars=settings.memory_context_max_chars,
             ),
+            tts_voice=settings.tts_voice,
+            audio_chunk_bytes=settings.audio_chunk_max_bytes,
         ),
     )
 
@@ -193,6 +223,31 @@ def _install_conversation_stack(
     app.state.state_service = state
     app.state.event_bus = bus
     app.state.connection_manager = ConnectionManager(bus)
+    #: WS 层的语音输入入口。``None`` 表示没配 STT，语音输入整体缺席
+    app.state.stt_provider = stt
+
+
+def _build_tts_provider(settings: Settings) -> TTSProvider | None:
+    """``tts_provider=none`` 时返回 ``None``——语音输出整体缺席，文本照常。"""
+    if settings.tts_provider != _COSYVOICE:
+        return None
+
+    return CosyVoiceTTSProvider(
+        base_url=settings.tts_base_url,
+        voice_id=settings.tts_voice,
+        timeout_s=settings.tts_timeout_s,
+    )
+
+
+def _build_stt_provider(settings: Settings) -> STTProvider | None:
+    """``stt_provider=none`` 时返回 ``None``——键盘输入仍然可用（`docs/01` §3）。"""
+    if settings.stt_provider != _COSYVOICE:
+        return None
+
+    return CosyVoiceSTTProvider(
+        base_url=settings.tts_base_url,
+        timeout_s=settings.stt_timeout_s,
+    )
 
 
 def _build_state_service(settings: Settings, bus: EventBus) -> StateService:

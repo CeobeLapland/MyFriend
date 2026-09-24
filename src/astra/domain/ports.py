@@ -14,6 +14,7 @@ from collections.abc import Sequence
 from datetime import datetime
 from typing import Protocol, runtime_checkable
 
+from astra.domain.audio import AudioArtifact, Transcript, TTSRequest
 from astra.domain.conversation import Conversation, Message
 from astra.domain.health import ComponentHealth
 from astra.domain.llm import LLMRequest, LLMResponse
@@ -52,6 +53,53 @@ class LLMProvider(Protocol):
 
     async def generate(self, request: LLMRequest) -> LLMResponse:
         """执行一次生成。实现必须自行应用超时，且不得阻塞事件循环。"""
+        ...
+
+
+@runtime_checkable
+class STTProvider(Protocol):
+    """语音识别后端（M4）。
+
+    输入是**已经解码的 int16 PCM**（不是 WAV 容器、不是浮点）——容器格式是
+    provider 的实现细节（CosyVoice 雨落版需要传文件，所以由它自己包 WAV）。
+
+    **端口是"整段"的，不是流式的**：M4 不做流式识别，也没有 ``stt.partial``。
+    这与 ``TTSProvider`` 的非流式设计同源（ADR 0009 / 0022）。
+
+    失败时抛 :class:`astra.domain.errors.STTUnavailableError`——与 ``LLMProvider``
+    同一约定（抛异常而不是返回错误对象），由调用方统一降级。
+    """
+
+    async def transcribe(
+        self,
+        audio: bytes,
+        sample_rate: int,
+        language_hint: str | None = None,
+    ) -> Transcript:
+        """把一段 PCM 转成文字。实现必须自行应用超时。"""
+        ...
+
+
+@runtime_checkable
+class TTSProvider(Protocol):
+    """语音合成后端（M4）。
+
+    **刻意是非流式的**：`docs/07` §3 写的接口是
+    ``synthesize_stream -> AsyncIterator[bytes]``，但首选后端（CosyVoice3 雨落版）
+    是 Gradio 应用，接口是**文件级**的——它返回一个生成完毕的 ``.wav`` 路径，
+    做不到"首包即播"。接口必须按真实能力设计，不能假装能流式（ADR 0009）。
+
+    所以 M4 的"低等待感"只能靠**整段合成 + 尽快推流**实现，
+    不引入 ``supports_streaming`` 之类的能力开关：现在没有任何消费者，
+    留一个没人读的标志就是死代码。将来真接入流式后端时**扩端口**，而不是提前留位。
+
+    失败时抛 :class:`astra.domain.errors.TTSUnavailableError`。调用方必须
+    **捕获它并继续**——文本回复已经送达，TTS 挂掉不该让 turn 失败
+    （`docs/10` §4「TTS failure」）。
+    """
+
+    async def synthesize(self, request: TTSRequest) -> AudioArtifact:
+        """把文本合成为 int16 PCM。实现必须自行应用超时。"""
         ...
 
 

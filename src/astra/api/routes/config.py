@@ -34,9 +34,10 @@ async def read_config(settings: SettingsDep, memories: MemoryDep) -> ConfigBody:
         user_id=settings.user_id,
         llm_provider=settings.llm_provider,
         llm_model=settings.llm_model,
-        # M4 / M5 接入时改为读 Settings；现在写常量，避免提前引入未使用的配置字段
-        stt_provider="none",
-        tts_provider="none",
+        # M4 起读真值。**key 集合不变**——只是这两个字段从 "none" 变成真实值
+        stt_provider=settings.stt_provider,
+        tts_provider=settings.tts_provider,
+        # M5 接 Unity 时才实现，`ASTRA_AVATAR_ENABLED` 在 .env.example 里仍保持注释
         avatar_enabled=False,
         emotions=list(EMOTION_CHOICES),
         actions=list(ACTION_CHOICES),

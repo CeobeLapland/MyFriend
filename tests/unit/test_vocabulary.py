@@ -7,12 +7,15 @@ import pytest
 from astra.domain import vocabulary as vocab
 from astra.domain.errors import (
     AstraError,
+    AudioFormatError,
     ConversationNotFoundError,
     ErrorCode,
     LLMDisabledError,
     LLMResponseError,
     LLMTimeoutError,
     LLMUnavailableError,
+    STTUnavailableError,
+    TTSUnavailableError,
 )
 from astra.domain.memory import MemoryType
 
@@ -168,6 +171,11 @@ def test_error_codes_are_a_closed_set() -> None:
         "llm_timeout",
         "llm_disabled",
         "llm_invalid_response",
+        # M4 音频：三个新码。STT/TTS 的"不可达"与"格式不支持"是客户端要分支的
+        # 三种不同处境，合成一个 generic 码会让客户端只能显示"出错了"。
+        "stt_unavailable",
+        "tts_unavailable",
+        "audio_format_error",
         "conversation_not_found",
         "invalid_input",
         "internal_error",
@@ -182,6 +190,10 @@ def test_error_codes_are_a_closed_set() -> None:
         (LLMDisabledError, ErrorCode.LLM_DISABLED, False),
         (LLMResponseError, ErrorCode.LLM_INVALID_RESPONSE, True),
         (ConversationNotFoundError, ErrorCode.CONVERSATION_NOT_FOUND, False),
+        # M4：音频侧的三个错误码都**不可重试**——重试要用户重新说一遍才有意义
+        (STTUnavailableError, ErrorCode.STT_UNAVAILABLE, False),
+        (TTSUnavailableError, ErrorCode.TTS_UNAVAILABLE, False),
+        (AudioFormatError, ErrorCode.AUDIO_FORMAT_ERROR, False),
     ],
 )
 def test_error_metadata(error_type: type[AstraError], code: ErrorCode, retryable: bool) -> None:

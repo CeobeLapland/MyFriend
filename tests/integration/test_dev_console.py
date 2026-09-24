@@ -6,6 +6,9 @@
 
 from __future__ import annotations
 
+import re
+import shutil
+import subprocess
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -17,6 +20,15 @@ from astra.settings import Settings
 from tests.fakes import FakeLLMProvider, llm_response
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+
+#: node 只是开发机上的便利工具，不是本项目的运行依赖——没有就跳过那条测试
+_NODE = shutil.which("node")
+
+
+def _extract_script(html: str) -> str:
+    match = re.search(r"<script>(.*?)</script>", html, re.DOTALL)
+    assert match is not None, "dev.html 里找不到 <script> 块"
+    return match.group(1)
 
 
 def _settings(tmp_path: Path, **overrides: object) -> Settings:
@@ -130,3 +142,26 @@ def test_websocket_route_is_mounted(dev_client: TestClient) -> None:
         event = socket.receive_json()
 
     assert event["type"] == "conversation.created"
+
+
+@pytest.mark.skipif(_NODE is None, reason="需要 node 才能解析 JS")
+def test_dev_console_script_parses(dev_client: TestClient, tmp_path: Path) -> None:
+    """整段脚本必须能被解析。
+
+    这不是洁癖：一个重复的 ``const`` 声明就是 ``SyntaxError``，会让**整个**页面
+    静默失效——按钮点了没反应、WebSocket 根本不连，而服务端一切正常、
+    控制台也不报错。M4 开发时真的踩过一次（``const el`` 声明了两遍）。
+
+    没有 node 就跳过：它只是开发机上的便利工具，不是本项目的运行依赖。
+    """
+    script = tmp_path / "dev.js"
+    script.write_text(_extract_script(dev_client.get("/dev").text), encoding="utf-8")
+
+    result = subprocess.run(  # noqa: S603 - 参数固定，无 shell，不涉及用户输入
+        [_NODE, "--check", str(script)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr

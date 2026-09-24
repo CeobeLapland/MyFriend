@@ -23,6 +23,13 @@ LLM_COMPONENT = "llm"
 #: 数据库组件。其 ``detail["schema_version"]`` 会被提升为报告的顶层字段。
 DATABASE_COMPONENT = "database"
 
+#: 语音识别组件。M4 起由 ``providers.cosyvoice.CosyVoiceHealthProbe`` 注册；
+#: 未配置 STT 时保持 ``not_configured``（与 M0 一致）。
+STT_COMPONENT = "stt"
+
+#: 语音合成组件。语义同 STT。
+TTS_COMPONENT = "tts"
+
 
 class HealthStatus(StrEnum):
     """组件或整体的健康状态。

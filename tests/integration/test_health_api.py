@@ -111,6 +111,39 @@ def test_llm_stt_tts_are_not_configured(client: TestClient) -> None:
         assert components[name]["status"] == "not_configured"
 
 
+# ── M4：STT/TTS 接上之后只改值，不改 key 集合 ────────────
+
+
+@pytest.mark.parametrize(
+    ("component", "overrides"),
+    [
+        ("stt", {"stt_provider": "cosyvoice"}),
+        ("tts", {"tts_provider": "cosyvoice"}),
+    ],
+)
+def test_configured_audio_provider_reports_a_real_status(
+    db_path: Path, component: str, overrides: dict[str, object]
+) -> None:
+    """配了 CosyVoice 就注册探针——状态是 ``ok`` 还是 ``down`` 取决于后端是否在跑，
+    但**绝不能**还是 ``not_configured``（那等于假装没配）。
+    """
+    with TestClient(create_app(_make_settings(db_path, **overrides))) as client:
+        body = client.get("/health").json()
+
+    assert set(body["components"]) == set(CANONICAL_COMPONENTS)
+    assert body["components"][component]["status"] in {"ok", "down"}
+
+
+def test_audio_providers_do_not_change_the_component_key_set(db_path: Path) -> None:
+    """ADR 0006：``/health`` 的 5 个 key 不可变，M4 只改 ``stt``/``tts`` 的值。"""
+    settings = _make_settings(db_path, stt_provider="cosyvoice", tts_provider="cosyvoice")
+
+    with TestClient(create_app(settings)) as client:
+        components = client.get("/health").json()["components"]
+
+    assert set(components) == set(CANONICAL_COMPONENTS)
+
+
 # ── 降级行为（HTTP 恒 200）──────────────────────────────
 
 

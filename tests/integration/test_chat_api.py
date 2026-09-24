@@ -152,6 +152,40 @@ def test_config_never_exposes_secrets(client: TestClient) -> None:
     assert "api_key" not in raw
 
 
+def test_config_reports_the_configured_audio_providers(db_path: Path) -> None:
+    """M4：``stt_provider`` / ``tts_provider`` 从常量 ``"none"`` 改成读 Settings。
+
+    **key 集合不变**——客户端从 M0 起就能写死解析逻辑。
+    """
+    settings = Settings(
+        _env_file=None,
+        db_path=db_path,
+        log_level="WARNING",
+        stt_provider="cosyvoice",
+        tts_provider="cosyvoice",
+    )
+
+    with TestClient(create_app(settings)) as client:
+        body = client.get("/v1/config").json()
+
+    assert body["stt_provider"] == "cosyvoice"
+    assert body["tts_provider"] == "cosyvoice"
+    assert set(body) == {
+        "companion_id",
+        "user_id",
+        "llm_provider",
+        "llm_model",
+        "stt_provider",
+        "tts_provider",
+        "avatar_enabled",
+        "emotions",
+        "actions",
+        "voice_styles",
+        "memory_enabled",
+        "memory_types",
+    }
+
+
 # ── 降级 ────────────────────────────────────────────────
 
 

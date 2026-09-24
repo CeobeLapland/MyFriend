@@ -16,11 +16,13 @@ from starlette.requests import HTTPConnection
 
 from astra.api.connection_manager import ConnectionManager
 from astra.application.conversation_service import ConversationService
+from astra.application.event_bus import EventBus
 from astra.application.health_service import HealthService
 from astra.application.memory_service import MemoryService
 from astra.application.orchestrator import Orchestrator
 from astra.application.state_service import StateService
 from astra.domain.persona import Persona
+from astra.domain.ports import STTProvider
 from astra.settings import Settings
 
 
@@ -54,3 +56,12 @@ def get_persona(connection: HTTPConnection) -> Persona:
 
 def get_app_settings(connection: HTTPConnection) -> Settings:
     return cast("Settings", connection.app.state.settings)
+
+
+def get_event_bus(connection: HTTPConnection) -> EventBus:
+    return cast("EventBus", connection.app.state.event_bus)
+
+
+def get_stt_provider(connection: HTTPConnection) -> STTProvider | None:
+    """``ASTRA_STT_PROVIDER=none`` 时为 ``None``——语音输入整体缺席，文本路径照常。"""
+    return cast("STTProvider | None", connection.app.state.stt_provider)

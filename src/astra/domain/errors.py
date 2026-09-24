@@ -19,6 +19,11 @@ class ErrorCode(StrEnum):
     LLM_TIMEOUT = "llm_timeout"
     LLM_DISABLED = "llm_disabled"
     LLM_INVALID_RESPONSE = "llm_invalid_response"
+    #: M4：STT/TTS 后端不可达。**都不让 turn 失败**——STT 失败时本轮根本没开始，
+    #: TTS 失败时文本回复照常送达（`docs/10` §4「TTS failure」）。
+    STT_UNAVAILABLE = "stt_unavailable"
+    TTS_UNAVAILABLE = "tts_unavailable"
+    AUDIO_FORMAT_ERROR = "audio_format_error"
     CONVERSATION_NOT_FOUND = "conversation_not_found"
     INVALID_INPUT = "invalid_input"
     INTERNAL_ERROR = "internal_error"
@@ -69,6 +74,38 @@ class ConversationNotFoundError(AstraError):
     """显式给出的 conversation_id 不存在或已结束。"""
 
     code = ErrorCode.CONVERSATION_NOT_FOUND
+    retryable = False
+
+
+class STTUnavailableError(AstraError):
+    """STT 后端不可达 / 返回了不可用的结果（M4）。
+
+    不做重试：语音识别是用户主动发起的一次操作，重试要用户重新说一遍才有意义。
+    """
+
+    code = ErrorCode.STT_UNAVAILABLE
+    retryable = False
+
+
+class TTSUnavailableError(AstraError):
+    """TTS 后端不可达 / 合成失败（M4）。
+
+    **抛它不会让 turn 失败**：调用方（``Orchestrator``）捕获后只发一条
+    ``tts.completed{status:"failed"}``，文本回复已经送达（ADR 0014 的降级模式）。
+    """
+
+    code = ErrorCode.TTS_UNAVAILABLE
+    retryable = False
+
+
+class AudioFormatError(AstraError):
+    """客户端声明的音频格式不受支持（M4）。
+
+    边界层（WS）应当先拦掉它；这里保留是为了让音频入口面对任何客户端
+    都能给出稳定的错误码而不是抛栈。
+    """
+
+    code = ErrorCode.AUDIO_FORMAT_ERROR
     retryable = False
 
 

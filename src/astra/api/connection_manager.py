@@ -25,6 +25,7 @@ from fastapi import WebSocket
 from starlette.websockets import WebSocketDisconnect
 
 from astra.application.event_bus import EventBus, Subscription
+from astra.domain.events import BinaryFrame, ServerFrame
 from astra.domain.ids import new_id
 
 _logger = logging.getLogger(__name__)
@@ -121,13 +122,13 @@ class ConnectionManager:
     async def _send_loop(self, connection: Connection) -> None:
         try:
             while True:
-                event = await connection.subscription.get()
-                if event is None:
+                frame = await connection.subscription.get()
+                if frame is None:
                     return  # 订阅已关闭
 
                 try:
                     await asyncio.wait_for(
-                        connection.websocket.send_json(event.to_dict()),
+                        self._send(connection, frame),
                         timeout=self._send_timeout_s,
                     )
                 except (TimeoutError, WebSocketDisconnect, RuntimeError):
@@ -139,3 +140,11 @@ class ConnectionManager:
             # 主动关掉 socket，让阻塞在 receive 的 receiver 循环醒来并走 finally
             with contextlib.suppress(Exception):
                 await connection.websocket.close()
+
+    @staticmethod
+    async def _send(connection: Connection, frame: ServerFrame) -> None:
+        """按帧的类型分派：事件走文本帧，音频走二进制帧（ADR 0021）。"""
+        if isinstance(frame, BinaryFrame):
+            await connection.websocket.send_bytes(frame.payload)
+        else:
+            await connection.websocket.send_json(frame.to_dict())

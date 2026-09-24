@@ -136,6 +136,28 @@ speak -> transcript -> response -> audio
 
 同时键盘输入仍然可用。
 
+### 实际落点（M4 已完成，见 ADR 0021 / 0022）
+
+- **不做 LLM 流式**（用户拍板）：整段合成。ADR 0011 的"不做流式"继续有效。
+- **音频走独立 WebSocket 二进制帧**，不塞 base64。二进制帧不是事件，
+  必须紧跟 `input.audio.started` / `tts.started` 这类说明格式的 JSON 帧。
+- **`EventBus` 队列扩成 `EventEnvelope | BinaryFrame`**，新增 `publish_binary()`；
+  所有出站帧（含 `error.protocol`）统一走总线，消除与 sender task 并发写 socket。
+- **STT/TTS 端口是非流式的**（`transcribe` / `synthesize`），与 `docs/07` §3 的
+  `synthesize_stream` 不同——后端（Gradio 文件接口）做不到，接口按真实能力设计。
+- **Gradio 后端用纯 httpx 调**（`/gradio_api/call` + `/upload` + 文件下载），
+  **无新增运行时依赖**，且天然 provider-agnostic（将来可换第三方云 API）。
+- **TTS 放在 turn 内、`turn.completed` 之前**，由显式的 voice mode 开关触发；
+  失败只发 `tts.completed{status:"failed"}`，**绝不让 turn 失败**。
+- **打断**：WS 接收循环重构为后台 task + `receive()` 分派，新输入取消在跑的 turn
+  并发 `turn.interrupted`。**断线不取消**（M1b 的既有契约保持）。
+- **8 GB 显存策略**：LLM 走 CPU、GPU 全给音频模型（实测 TTS 单独 2–4 s/句，
+  与满 GPU 的 LLM 共存时劣化到 10–30 s/句）。代价是纯文本聊天 3–5 s → 6–10 s。
+- **Settings 拆包**：`settings.py` 拆成 `settings/` 包（5 个 mixin），
+  字段名与 `ASTRA_*` env 名逐字不变，读取点零改动。
+- **未做**：`stt.partial` / `tts.chunk` 事件、`voice.style` → instruct 映射、
+  麦克风采集的客户端（Unity 端，M5）。
+
 ## 6. 阶段 5：Avatar
 
 实现：

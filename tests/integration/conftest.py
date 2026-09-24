@@ -84,9 +84,20 @@ def run_server(tmp_path: Path) -> Iterator[Callable[..., LiveServer]]:
     servers: list[uvicorn.Server] = []
     threads: list[threading.Thread] = []
 
-    def _start(*, llm: LLMProvider | None = None, **overrides: Any) -> LiveServer:
+    def _start(
+        *,
+        llm: LLMProvider | None = None,
+        stt: object = None,
+        tts: object = None,
+        **overrides: Any,
+    ) -> LiveServer:
         settings = make_settings(tmp_path, **overrides)
-        app = create_app(settings, llm=llm if llm is not None else default_llm())
+        app = create_app(
+            settings,
+            llm=llm if llm is not None else default_llm(),
+            stt=stt,  # type: ignore[arg-type]
+            tts=tts,  # type: ignore[arg-type]
+        )
 
         config = uvicorn.Config(
             app,

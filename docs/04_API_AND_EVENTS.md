@@ -140,6 +140,9 @@ LLM 不可用时同样是 200，但 `status` 为 `failed`、`failure.code` 给�
 词表必须从这里取——它是与 Unity 端的协议契约，代码侧有单一真相
 （`src/astra/domain/vocabulary.py`，见 `decisions/0015`）。
 
+`stt_provider` / `tts_provider` 的值来自 `ASTRA_STT_PROVIDER` / `ASTRA_TTS_PROVIDER`
+（M4 起；之前是写死的 `"none"`）。**key 集合不变**——客户端从 M0 起就能写死解析。
+
 ### GET /v1/conversations/{conversation_id}/messages
 
 按 **id 升序**返回该会话的全部消息。未知会话返回 **404**。
@@ -191,6 +194,19 @@ LLM 不可用时同样是 200，但 `status` 为 `failed`、`failure.code` 给�
 }
 ```
 
+M4 起还支持三种帧（音频字节本身走二进制帧，见 §3.2）：
+
+```json
+{"type": "input.audio.started", "version": 1,
+ "payload": {"encoding": "pcm16", "sample_rate": 16000, "channels": 1,
+             "conversation_id": null}}
+{"type": "input.audio.stopped", "version": 1, "payload": {}}
+{"type": "session.voice_mode.set", "version": 1, "payload": {"enabled": true}}
+```
+
+`session.voice_mode.set` 是**显式开关**：`docs/11` §2 要求只有用户显式进 voice
+mode 才采集麦克风，而"这一轮该不该把回复合成成语音"是同一个开关的另一面。
+
 服务器可能推送：
 
 ```text
@@ -235,6 +251,56 @@ turn.started
 > M1 不做流式，所以没有 `assistant.text.delta`——它在 P1 加流式时启用。
 > 当前 `assistant.text.completed` 一次给出完整 `reply`。
 
+### 3.1 语音模式下的序列（M4 起）
+
+客户端显式开启 voice mode（`session.voice_mode.set {enabled:true}`）之后，
+turn 中间会插入语音事件：
+
+```text
+turn.started
+→ conversation.message.created（user）
+→ conversation.message.created（assistant）
+→ assistant.text.completed
+→ avatar.expression.set
+→ avatar.action.play
+→ tts.started
+→ （若干二进制音频帧，不占事件序列）
+→ tts.completed
+→ state.emotion.updated
+→ turn.completed
+```
+
+**`tts.started` 携带格式**（`encoding` / `sample_rate` / `channels` /
+`chunk_count` / `duration_ms`）：客户端必须先知道格式才能解释紧随其后的
+二进制帧，所以它排在**合成之后、推流之前**。`tts.completed` 的 `chunk_count`
+可用于自检有没有丢帧。
+
+### 3.2 音频二进制帧（M4 起）
+
+音频**不走 JSON payload**，而是独立的 WebSocket 二进制帧（见
+`decisions/0021-audio-binary-frame-protocol.md`）。
+
+**客户端 → 服务端**：
+
+```text
+JSON  {"type":"input.audio.started","version":1,
+       "payload":{"encoding":"pcm16","sample_rate":16000,"channels":1,
+                  "conversation_id":null}}
+BIN   <原始 int16 PCM 字节>            ← 可多帧
+JSON  {"type":"input.audio.stopped","version":1,"payload":{}}
+```
+
+**服务端 → 客户端**：`tts.started` 之后跟着若干二进制帧，然后 `tts.completed`。
+
+约束：
+
+- 二进制帧**不是事件**，没有信封，也不进幂等去重；
+- **没有上下文时收到二进制帧 → `error.protocol`**（只报一次），且不关连接；
+- 服务端**不做重采样**：`input.audio.started` 声明的格式与
+  `ASTRA_AUDIO_INPUT_SAMPLE_RATE` / `ASTRA_AUDIO_INPUT_CHANNELS` 不符会被拒绝；
+- 客户端在收到 `turn.interrupted` 后必须**立即停止播放**已收到的音频——
+  服务端只能停止*继续发送*。
+
 ## 4. 推荐事件类型
 
 ### Conversation
@@ -270,13 +336,13 @@ turn.started
 
 ### Audio
 
-- `audio.input.started`
-- `audio.input.stopped`
-- `stt.partial`
-- `stt.final`
-- `tts.started`
-- `tts.chunk`
-- `tts.completed`
+- `audio.input.started` —— M4 实现
+- `audio.input.stopped` —— M4 实现
+- `stt.partial` —— **未实现**（M4 不做流式识别，也不发布它）
+- `stt.final` —— M4 实现
+- `tts.started` —— M4 实现
+- `tts.chunk` —— **未实现**（音频在二进制帧里，事件层不需要它，见 ADR 0021）
+- `tts.completed` —— M4 实现
 
 ### Avatar
 

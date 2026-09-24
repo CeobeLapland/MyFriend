@@ -54,6 +54,9 @@ class EventType(StrEnum):
     STATE_RELATIONSHIP_UPDATED = "state.relationship.updated"
 
     # ── Audio（M4 起）───────────────────────────────────
+    #: 客户端开始/停止送音频。**不是音频本身**——音频走二进制帧（见 BinaryFrame）。
+    AUDIO_INPUT_STARTED = "audio.input.started"
+    AUDIO_INPUT_STOPPED = "audio.input.stopped"
     STT_FINAL = "stt.final"
     TTS_STARTED = "tts.started"
     TTS_COMPLETED = "tts.completed"
@@ -70,6 +73,29 @@ class ClientFrameType(StrEnum):
     """客户端可以发来的帧类型。"""
 
     INPUT_USER_TEXT = "input.user_text"
+    #: 开始送音频。payload 里声明格式（encoding / sample_rate / channels），
+    #: 之后的**二进制帧**按这个格式解释，直到 ``INPUT_AUDIO_STOPPED``。
+    INPUT_AUDIO_STARTED = "input.audio.started"
+    INPUT_AUDIO_STOPPED = "input.audio.stopped"
+    #: 显式开关语音模式。``docs/11`` §2 要求"只有用户显式进 voice mode 才采集"，
+    #: 而"这一轮该不该合成语音"是同一个开关的另一面。
+    VOICE_MODE_SET = "session.voice_mode.set"
+
+
+@dataclass(frozen=True, slots=True)
+class BinaryFrame:
+    """一段二进制负载（音频字节）。
+
+    **它不是事件**：没有 ``event_id`` / ``type`` / ``version`` 信封，
+    也不进幂等去重（去重靠 ``event_id``）。
+
+    协议规定它**必须紧跟**一条说明格式的 JSON 事件：
+    客户端发来的音频跟在 ``audio.input.started`` 之后，
+    服务端推的音频跟在 ``tts.started`` 之后。没有上下文时收到二进制帧，
+    边界层回 ``error.protocol`` 且**不关连接**（ADR 0021）。
+    """
+
+    payload: bytes
 
 
 @dataclass(frozen=True, slots=True)
@@ -115,3 +141,8 @@ def make_event(
         correlation_id=correlation_id,
         payload=payload if payload is not None else {},
     )
+
+
+#: 一条连接上可能流动的东西：JSON 事件，或一段二进制负载。
+#: ``EventBus`` / ``ConnectionManager`` 的队列元素就是它。
+ServerFrame = EventEnvelope | BinaryFrame

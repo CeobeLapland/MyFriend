@@ -9,9 +9,11 @@ import asyncio
 import hashlib
 import json
 import math
+import struct
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from astra.domain.audio import AudioArtifact, AudioFormat, Transcript, TTSRequest
 from astra.domain.errors import LLMUnavailableError
 from astra.domain.llm import LLMRequest, LLMResponse, LLMUsage
 
@@ -145,6 +147,89 @@ class FakeEmbeddingProvider:
     @property
     def call_count(self) -> int:
         return len(self.calls)
+
+
+class FakeSTTProvider:
+    """脚本化的 :class:`astra.domain.ports.STTProvider`。
+
+    默认返回固定文本；测试可以读 ``audio`` 断言"送进来的 PCM 是不是原样"。
+    """
+
+    def __init__(
+        self,
+        *,
+        text: str = "你好呀",
+        error: Exception | None = None,
+        delay_s: float = 0.0,
+    ) -> None:
+        self.audio: list[bytes] = []
+        self.sample_rates: list[int] = []
+        self._text = text
+        self._error = error
+        self._delay_s = delay_s
+
+    async def transcribe(
+        self,
+        audio: bytes,
+        sample_rate: int,
+        language_hint: str | None = None,
+    ) -> Transcript:
+        self.audio.append(audio)
+        self.sample_rates.append(sample_rate)
+
+        if self._delay_s:
+            await asyncio.sleep(self._delay_s)
+
+        if self._error is not None:
+            raise self._error
+
+        return Transcript(text=self._text)
+
+    @property
+    def call_count(self) -> int:
+        return len(self.audio)
+
+
+class FakeTTSProvider:
+    """脚本化的 :class:`astra.domain.ports.TTSProvider`。
+
+    默认返回一段可预测的 int16 PCM（``samples`` 个采样，全为 ``value``），
+    这样"切了几帧、每帧多大"这类断言可以直接算出来。
+    """
+
+    def __init__(
+        self,
+        *,
+        samples: int = 1600,
+        value: int = 1000,
+        sample_rate: int = 24000,
+        error: Exception | None = None,
+        delay_s: float = 0.0,
+    ) -> None:
+        self.requests: list[TTSRequest] = []
+        self._pcm = struct.pack(f"<{samples}h", *([value] * samples))
+        self._format = AudioFormat(sample_rate=sample_rate, channels=1)
+        self._error = error
+        self._delay_s = delay_s
+
+    @property
+    def pcm(self) -> bytes:
+        return self._pcm
+
+    async def synthesize(self, request: TTSRequest) -> AudioArtifact:
+        self.requests.append(request)
+
+        if self._delay_s:
+            await asyncio.sleep(self._delay_s)
+
+        if self._error is not None:
+            raise self._error
+
+        return AudioArtifact(pcm=self._pcm, format=self._format)
+
+    @property
+    def call_count(self) -> int:
+        return len(self.requests)
 
 
 def _normalize(vector: Sequence[float]) -> tuple[float, ...]:
