@@ -236,6 +236,7 @@ def _build_tts_provider(settings: Settings) -> TTSProvider | None:
         base_url=settings.tts_base_url,
         voice_id=settings.tts_voice,
         timeout_s=settings.tts_timeout_s,
+        reference_audio=settings.tts_reference_audio,
     )
 
 

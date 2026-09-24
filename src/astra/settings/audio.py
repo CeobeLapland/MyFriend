@@ -15,9 +15,12 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, field_validator
+
+from astra.settings.base import blank_to_none
 
 AudioProviderName = Literal["none", "cosyvoice"]
 
@@ -33,7 +36,18 @@ class AudioSettingsMixin:
     #: 雨落版 Gradio 应用的地址。STT 与 TTS 是同一个进程，所以共用一个 URL。
     tts_base_url: str = "http://127.0.0.1:7860"
     #: `/rainfall_gen_sft` 的预训练音色名。雨落版当前只列出 "开拓者"。
+    #: **实测这个预置音色合成出来是乱码**（见下方 `tts_reference_audio`），
+    #: 所以它只在没配参考音频时才会被用到。
     tts_voice: str = "开拓者"
+    #: **zero-shot 音色克隆的参考音频**（≤30 秒的干净人声，单声道 wav 最好）。
+    #:
+    #: 配了它就走 `/rainfall_gen_zero_shot`（每轮用这段音频克隆音色）；
+    #: 留空则退回 `/rainfall_gen_sft` 的预置音色。
+    #:
+    #: M4 真机验收实测：博主整合包的预置音色「开拓者」念出来像乱码，
+    #: 而 zero-shot 同一段文本效果正常——所以**推荐配一个参考音频**。
+    #: 参考音频对应的文本由 `/prompt_wav_recognition` 自动识别，不用手打。
+    tts_reference_audio: Path | None = None
     #: 首次调用含模型加载（实测 TTS 冷启 ~5 s、STT 冷启 ~4.9 s），别设太紧。
     tts_timeout_s: float = Field(default=120.0, gt=0)
     stt_timeout_s: float = Field(default=120.0, gt=0)
@@ -64,3 +78,9 @@ class AudioSettingsMixin:
     vad_silence_ms: int = Field(default=800, ge=100)
     #: 归一化 RMS 阈值（0..1）。环境嘈杂时可调高。
     vad_energy_threshold: float = Field(default=0.01, ge=0.0, le=1.0)
+
+    @field_validator("tts_reference_audio", mode="before")
+    @classmethod
+    def _blank_reference_to_none(cls, value: object) -> object:
+        """``ASTRA_TTS_REFERENCE_AUDIO=`` 表示"不启用 zero-shot"，不是"当前目录"。"""
+        return blank_to_none(value)

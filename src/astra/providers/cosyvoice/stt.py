@@ -17,7 +17,11 @@ import httpx
 from astra.domain.audio import AudioFormat, Transcript
 from astra.domain.errors import STTUnavailableError
 from astra.infrastructure.audio.codec import encode_wav
-from astra.providers.cosyvoice.client import GradioCallClient, GradioCallError
+from astra.providers.cosyvoice.client import (
+    GradioCallClient,
+    GradioCallError,
+    extract_text,
+)
 
 #: 雨落版的语音识别端点（SenseVoiceSmall）
 _STT_API = "prompt_wav_recognition"
@@ -51,18 +55,6 @@ class CosyVoiceSTTProvider:
                 _STT_API,
                 [{"path": uploaded, "meta": {"_type": "gradio.FileData"}}],
             )
+            return Transcript(text=extract_text(result))
         except GradioCallError as exc:
             raise STTUnavailableError("stt backend failed", detail=str(exc)) from exc
-
-        return Transcript(text=_extract_text(result))
-
-
-def _extract_text(result: list[object]) -> str:
-    if not result:
-        msg = "stt backend returned an empty output list"
-        raise STTUnavailableError(msg)
-    value = result[0]
-    if not isinstance(value, str):
-        msg = f"stt backend returned {type(value).__name__}, expected text"
-        raise STTUnavailableError(msg)
-    return value.strip()

@@ -210,3 +210,19 @@ def _parse_data(payload: str) -> list[object]:
         msg = f"expected the result to be a list, got {type(parsed).__name__}"
         raise GradioCallError(msg)
     return parsed
+
+
+def extract_text(result: list[object]) -> str:
+    """从 Gradio 的输出数组里取出文本（``/prompt_wav_recognition`` 的输出形态）。
+
+    ``stt`` 与 ``tts``（zero-shot 要识别参考音频的文本）都用它，
+    所以错误类型是 provider 无关的 :class:`GradioCallError`，由各自的调用方翻译。
+    """
+    if not result:
+        msg = "expected text, got an empty output list"
+        raise GradioCallError(msg)
+    value = result[0]
+    if not isinstance(value, str):
+        msg = f"expected text, got {type(value).__name__}"
+        raise GradioCallError(msg)
+    return value.strip()

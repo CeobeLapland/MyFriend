@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import json
 import struct
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -198,6 +199,113 @@ def test_tts_missing_file_reference_becomes_unavailable() -> None:
         asyncio.run(_tts(handler).synthesize(TTSRequest(text="你好。", voice_id="v")))
 
 
+# ── TTS：zero-shot 音色克隆（配了参考音频时）────────────
+
+ZERO_SHOT_PATH = "/gradio_api/call/rainfall_gen_zero_shot"
+
+
+def _reference_file(tmp_path: Path) -> Path:
+    path = tmp_path / "voice.wav"
+    path.write_bytes(_pcm16_wav(1, 2, 3))
+    return path
+
+
+def _zero_shot_handler(seen: list[httpx.Request]) -> Any:
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        if request.url.path == "/gradio_api/upload":
+            return httpx.Response(200, json=["server/voice.wav"])
+        if request.url.path == "/gradio_api/call/prompt_wav_recognition":
+            return httpx.Response(200, json={"event_id": "rec-1"})
+        if request.url.path == "/gradio_api/call/prompt_wav_recognition/rec-1":
+            return httpx.Response(
+                200, content=_sse(("complete", json.dumps(["这是参考音频的内容。"])))
+            )
+        if request.url.path == ZERO_SHOT_PATH:
+            return httpx.Response(200, json={"event_id": "zs-1"})
+        if request.url.path == f"{ZERO_SHOT_PATH}/zs-1":
+            return httpx.Response(
+                200,
+                content=_sse(("complete", json.dumps([{"path": "out.wav", "url": FILE_URL}]))),
+            )
+        if request.url.path == "/gradio_api/file=out.wav":
+            return httpx.Response(200, content=_float32_wav([0.0, 0.5]))
+        return httpx.Response(404)
+
+    return handler
+
+
+def test_zero_shot_is_used_when_a_reference_audio_is_configured(tmp_path: Path) -> None:
+    """配了参考音频就走克隆，且**先上传再识别再合成**——顺序错了拿不到 prompt_text。"""
+    seen: list[httpx.Request] = []
+    provider = _tts(_zero_shot_handler(seen), reference_audio=_reference_file(tmp_path))
+
+    artifact = asyncio.run(provider.synthesize(TTSRequest(text="你好。", voice_id="x")))
+
+    assert artifact.pcm
+    assert [r.url.path for r in seen] == [
+        "/gradio_api/upload",
+        "/gradio_api/call/prompt_wav_recognition",
+        "/gradio_api/call/prompt_wav_recognition/rec-1",
+        ZERO_SHOT_PATH,
+        f"{ZERO_SHOT_PATH}/zs-1",
+        "/gradio_api/file=out.wav",
+    ]
+
+
+def test_zero_shot_passes_the_recognised_prompt_text(tmp_path: Path) -> None:
+    """Gradio 的 ``data`` 是位置参数：``[文本, 参考音频, 参考文本, 语速, ...]``。"""
+    seen: list[httpx.Request] = []
+    provider = _tts(_zero_shot_handler(seen), reference_audio=_reference_file(tmp_path))
+
+    asyncio.run(provider.synthesize(TTSRequest(text="你好。", voice_id="x", speed=1.25)))
+
+    body = json.loads(seen[3].content)
+    assert body["data"][0] == "你好。"
+    assert body["data"][1]["path"] == "server/voice.wav"
+    assert body["data"][1]["meta"]["_type"] == "gradio.FileData"
+    assert body["data"][2] == "这是参考音频的内容。"
+    assert body["data"][3] == 1.25
+    assert body["data"][6] == "wav"
+
+
+def test_reference_audio_is_uploaded_only_once(tmp_path: Path) -> None:
+    """上传与识别只在首次合成时做——每轮都重来是两次无谓的往返。"""
+    seen: list[httpx.Request] = []
+    provider = _tts(_zero_shot_handler(seen), reference_audio=_reference_file(tmp_path))
+
+    asyncio.run(provider.synthesize(TTSRequest(text="第一句", voice_id="x")))
+    asyncio.run(provider.synthesize(TTSRequest(text="第二句", voice_id="x")))
+
+    uploads = [r for r in seen if r.url.path == "/gradio_api/upload"]
+    assert len(uploads) == 1
+
+
+def test_missing_reference_file_becomes_unavailable(tmp_path: Path) -> None:
+    """参考音频路径写错时要给出明确错误，而不是让整个 turn 静默失败。"""
+    seen: list[httpx.Request] = []
+    provider = _tts(_zero_shot_handler(seen), reference_audio=tmp_path / "nope.wav")
+
+    with pytest.raises(TTSUnavailableError, match="reference audio"):
+        asyncio.run(provider.synthesize(TTSRequest(text="你好。", voice_id="x")))
+
+
+def test_empty_reference_transcript_becomes_unavailable(tmp_path: Path) -> None:
+    """识别不出参考音频的文本时，zero-shot 没法用——要明确报错。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/gradio_api/upload":
+            return httpx.Response(200, json=["server/voice.wav"])
+        if request.url.path == "/gradio_api/call/prompt_wav_recognition":
+            return httpx.Response(200, json={"event_id": "rec-1"})
+        return httpx.Response(200, content=_sse(("complete", json.dumps(["   "]))))
+
+    provider = _tts(handler, reference_audio=_reference_file(tmp_path))
+
+    with pytest.raises(TTSUnavailableError, match="empty transcript"):
+        asyncio.run(provider.synthesize(TTSRequest(text="你好。", voice_id="x")))
+
+
 # ── STT ─────────────────────────────────────────────────
 
 
@@ -283,8 +391,11 @@ def test_stt_non_text_result_becomes_unavailable() -> None:
             return httpx.Response(200, json={"event_id": "e"})
         return httpx.Response(200, content=_sse(("complete", json.dumps([{"nope": 1}]))))
 
-    with pytest.raises(STTUnavailableError, match="expected text"):
+    with pytest.raises(STTUnavailableError) as excinfo:
         asyncio.run(_stt(handler).transcribe(b"\x00\x00" * 10, sample_rate=16000))
+
+    # 具体原因在 detail 里——外层消息是稳定的"backend failed"
+    assert "expected text" in (excinfo.value.detail or "")
 
 
 def test_stt_upload_failure_becomes_unavailable() -> None:

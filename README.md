@@ -192,6 +192,8 @@ lms load nvidia/nemotron-3-nano-4b --gpu off --context-length 16384
 
 # 1) 确认 CosyVoice 雨落版在跑，并打开 STT/TTS
 $env:ASTRA_STT_PROVIDER="cosyvoice"; $env:ASTRA_TTS_PROVIDER="cosyvoice"
+#    ★ 配一段参考音频走 zero-shot 音色克隆（推荐，见下）
+$env:ASTRA_TTS_REFERENCE_AUDIO="E:\Voice\cosyvoice3-rainfall-v2\cosyvoice-rainfall-v2\cosyvoice-rainfall\assets\zero_shot_prompt.wav"
 uv run astra serve
 
 # 2) /health 的 stt / tts 应变成 ok（key 集合仍是 api/database/llm/stt/tts）
@@ -223,6 +225,11 @@ Invoke-RestMethod http://127.0.0.1:8000/health | ConvertTo-Json -Depth 4
 
 要点：
 
+- **音色走 zero-shot 克隆**（`ASTRA_TTS_REFERENCE_AUDIO` 指向一段 ≤30 秒的参考
+  音频）。留空则退回雨落版的预置音色——**实测那个预置音色「开拓者」合成出来
+  像乱码**，所以强烈建议配一段。参考音频对应的文本会自动识别，不用手打。
+  雨落版自带的 `assets/zero_shot_prompt.wav` 就能直接用；换成你自己的录音即可
+  克隆出你自己的声音。
 - **voice mode 是显式开关**（`session.voice_mode.set`）。麦克风默认关闭
   （`docs/11` §2）；没开 voice mode 时语音输入照常可用，但**不会**合成语音。
 - **服务端不做重采样**：声明的格式必须与 `ASTRA_AUDIO_INPUT_SAMPLE_RATE` /

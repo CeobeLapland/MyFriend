@@ -21,6 +21,17 @@ LogFormat = Literal["json", "text"]
 Environment = Literal["dev", "test", "prod"]
 
 
+def blank_to_none(value: object) -> object:
+    """把 ``ASTRA_X=`` 这类空串归一化为 ``None``。
+
+    ``.env.example`` 里"留空表示不启用"的键都走它。**不做这个归一化的话**
+    ``Path("")`` 会被解析成当前目录，静默变成"配了一个空路径"。
+    """
+    if isinstance(value, str) and not value.strip():
+        return None
+    return value
+
+
 class BaseSettingsMixin:
     """运行环境、日志、HTTP、数据目录与健康检查。"""
 
@@ -55,6 +66,4 @@ class BaseSettingsMixin:
     @classmethod
     def _blank_to_none(cls, value: object) -> object:
         """把 ``ASTRA_LOG_FILE=`` 这类空串归一化为 None。"""
-        if isinstance(value, str) and not value.strip():
-            return None
-        return value
+        return blank_to_none(value)
