@@ -1,0 +1,42 @@
+# ── Python ──────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+build/
+dist/
+.venv/
+venv/
+.python-version.bak
+
+# ── 工具缓存 ────────────────────────────────────────────
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+
+# ── 环境与密钥（11_SECURITY_AND_PRIVACY §3）─────────────
+.env
+.env.*
+!.env.example
+
+# ── 运行期数据（SQLite 及其 WAL 边车文件）───────────────
+data/*
+!data/.gitkeep
+*.db
+*.db-wal
+*.db-shm
+
+# ── 日志 ────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Agent / IDE / OS ────────────────────────────────────
+.trae/
+.idea/
+.DS_Store
+Thumbs.db

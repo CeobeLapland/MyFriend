@@ -1,0 +1,103 @@
+[project]
+name = "astra"
+version = "0.1.0"
+description = "Astra — local-first AI companion (text brain, long-term memory, voice, 3D avatar)"
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "fastapi>=0.141.1",
+    "pydantic>=2.13.5",
+    "pydantic-settings>=2.15.0",
+    "uvicorn>=0.53.0",
+]
+
+[project.scripts]
+astra = "astra.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/astra"]
+
+# ── ruff（lint + format 一体）────────────────────────────
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+# 只处理 Python 文件。ruff 0.16 起会把 Markdown 里的 Python 代码块也格式化，
+# 而 docs/ 是本项目的规格来源，不应被代码格式化工具改写（ADR 0007）。
+include = ["*.py", "*.pyi"]
+extend-exclude = ["data", ".venv"]
+
+[tool.ruff.lint]
+# ANN: 强制公开函数类型标注（09_AGENT_INSTRUCTIONS "Code Style"）
+# DTZ: 强制 datetime 带时区，防止 naive UTC 混进 DB
+# ASYNC: 抓出在 async def 里直接调用阻塞的 sqlite3 / open()
+# S:    bandit 安全检查
+select = [
+    "E", "F", "W",   # pycodestyle / pyflakes
+    "I",             # isort
+    "N",             # pep8-naming
+    "UP",            # pyupgrade
+    "B",             # flake8-bugbear
+    "C4",            # flake8-comprehensions
+    "SIM",           # flake8-simplify
+    "RUF",           # ruff 自有规则
+    "ANN",           # flake8-annotations
+    "ASYNC",         # flake8-async
+    "DTZ",           # flake8-datetimez
+    "LOG",           # flake8-logging
+    "T20",           # flake8-print（禁止残留 print）
+    "S",             # flake8-bandit
+    "PT",            # flake8-pytest-style
+]
+ignore = [
+    # 本项目的注释与文档字符串刻意使用中文。RUF001/002/003 会把全角标点
+    # （，。：（）等）判为 "ambiguous unicode"，对中文代码库是纯噪声。
+    "RUF001",
+    "RUF002",
+    "RUF003",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# S106: 测试里会用形如 secret 的假值，不是真实凭据
+"tests/**" = ["S101", "ANN201", "ANN001", "ANN202", "T20", "S106"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["astra"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+# ── mypy ────────────────────────────────────────────────
+# 只对 src/ 做严格类型检查。tests/ 不在检查范围内——测试里大量使用未标注的
+# fixture 参数，严格模式收益低、摩擦高。
+[tool.mypy]
+python_version = "3.12"
+strict = true
+files = ["src"]
+plugins = ["pydantic.mypy"]
+warn_unreachable = true
+warn_unused_configs = true
+show_error_codes = true
+
+[tool.pydantic-mypy]
+init_forbid_extra = true
+init_typed = true
+warn_required_dynamic_aliases = true
+
+# ── pytest ──────────────────────────────────────────────
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --strict-config"
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "mypy>=2.3.1",
+    "pytest>=9.1.1",
+    "ruff>=0.16.8",
+]
