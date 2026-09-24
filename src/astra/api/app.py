@@ -21,6 +21,7 @@ from astra.api.routes.chat import router as chat_router
 from astra.api.routes.chat_ws import router as chat_ws_router
 from astra.api.routes.config import router as config_router
 from astra.api.routes.conversations import router as conversations_router
+from astra.api.routes.dev import router as dev_router
 from astra.api.routes.health import router as health_router
 from astra.application.conversation_service import ConversationService
 from astra.application.event_bus import EventBus
@@ -84,6 +85,10 @@ def create_app(settings: Settings, *, llm: LLMProvider | None = None) -> FastAPI
     app.include_router(chat_router)
     app.include_router(conversations_router)
     app.include_router(chat_ws_router)
+
+    # 开发者控制台只在 dev 环境挂载——绑到 0.0.0.0 时把 ASTRA_ENV 设成 prod 即可关掉
+    if settings.env == "dev":
+        app.include_router(dev_router)
 
     return app
 

@@ -93,6 +93,22 @@ LLM 挂掉时 `status` 为 `failed`，`reply` 会是一句诚实的中文，而�
 > **`astra chat` 与 `astra serve` 同时跑会争 SQLite**。WAL + `busy_timeout=5000`
 > 让它能正常工作，但两者都在写时会偶发等待。
 
+## 开发者控制台
+
+浏览器打开 **http://127.0.0.1:8000/dev**
+
+左边是对话（可在 WebSocket / 同步两种模式间切换），右边是**原始事件流**。
+顶部是 health 实时状态（每 5 秒刷新），底部可展开看运行配置与协议词表。
+
+**这是开发工具，不是产品 UI**（见 [ADR 0017](docs/decisions/0017-developer-console.md)）。
+它看的是协议与运行状态——原始事件、health、stub、重试、耗时；产品 UI 看的是角色。
+两者不冲突，控制台在产品 UI 做出来之后依然有用。
+
+- 零构建、零 npm、零新增依赖：单文件 HTML + 原生 JS。
+- **只在 `ASTRA_ENV=dev`（默认）时挂载**。如果你把 `ASTRA_HTTP_HOST` 改成
+  `0.0.0.0` 暴露到局域网，记得同时把 `ASTRA_ENV` 设成 `prod` 关掉它。
+- 离线可用，不引任何 CDN。
+
 ## 常用命令
 
 | 命令 | 作用 |

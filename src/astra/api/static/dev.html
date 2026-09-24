@@ -1,0 +1,473 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Astra · 开发者控制台</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #14161a;
+    --panel: #1b1e24;
+    --panel-2: #22262e;
+    --border: #2e333d;
+    --text: #e6e8ec;
+    --muted: #8b93a1;
+    --accent: #5cf5a8;
+    --warn: #efaa17;
+    --danger: #e8463a;
+    --user: #4a9eff;
+    --mono: ui-monospace, "Cascadia Mono", "SF Mono", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.5 -apple-system, "Segoe UI", "PingFang SC", system-ui, sans-serif;
+    height: 100vh; display: flex; flex-direction: column;
+  }
+  header {
+    display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--panel);
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  header .tag { font-size: 12px; color: var(--muted); border: 1px solid var(--border);
+                border-radius: 999px; padding: 1px 8px; }
+  .status { display: flex; gap: 12px; flex-wrap: wrap; margin-left: auto; font-size: 12px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+  .dot.ok { background: var(--accent); }
+  .dot.degraded { background: var(--warn); }
+  .dot.down { background: var(--danger); }
+  main { flex: 1; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); min-height: 0; }
+  .pane { display: flex; flex-direction: column; min-height: 0; border-right: 1px solid var(--border); }
+  .pane:last-child { border-right: 0; }
+  .pane > h2 {
+    margin: 0; padding: 8px 16px; font-size: 12px; font-weight: 600; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .06em; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; gap: 8px;
+  }
+  .pane > h2 .spacer { flex: 1; }
+  .scroll { flex: 1; overflow-y: auto; padding: 12px 16px; min-height: 0; }
+  .msg { margin-bottom: 10px; }
+  .msg .who { font-size: 11px; color: var(--muted); margin-bottom: 2px; }
+  .msg .bubble { padding: 8px 10px; border-radius: 8px; background: var(--panel-2);
+                 white-space: pre-wrap; word-break: break-word; }
+  .msg.user .bubble { border-left: 2px solid var(--user); }
+  .msg.assistant .bubble { border-left: 2px solid var(--accent); }
+  .msg.failed .bubble { border-left: 2px solid var(--danger); }
+  .msg .meta { font-size: 11px; color: var(--muted); margin-top: 3px; font-family: var(--mono); }
+  .evt { font-family: var(--mono); font-size: 12px; padding: 4px 0; border-bottom: 1px dashed var(--border);
+         display: flex; gap: 8px; }
+  .evt .t { color: var(--accent); flex: none; min-width: 190px; }
+  .evt .p { color: var(--muted); word-break: break-all; }
+  .evt.error .t { color: var(--danger); }
+  .evt.turn-failed .t { color: var(--danger); }
+  form { display: flex; gap: 8px; padding: 10px 16px; border-top: 1px solid var(--border); background: var(--panel); }
+  input[type=text] {
+    flex: 1; background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 9px 12px; font: inherit; min-width: 0;
+  }
+  input[type=text]:focus { outline: none; border-color: var(--accent); }
+  button {
+    background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+    border-radius: 8px; padding: 9px 14px; font: inherit; cursor: pointer;
+  }
+  button:hover { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  button.primary { background: var(--accent); color: #0d1117; border-color: var(--accent); font-weight: 600; }
+  .row { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--muted); }
+  .row label { cursor: pointer; }
+  details { border-top: 1px solid var(--border); }
+  details > summary {
+    cursor: pointer; padding: 8px 16px; font-size: 12px; color: var(--muted);
+    text-transform: uppercase; letter-spacing: .06em; background: var(--panel);
+  }
+  details .body { padding: 10px 16px 14px; font-size: 12px; }
+  .kv { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; font-family: var(--mono); }
+  .kv dt { color: var(--muted); }
+  .kv dd { margin: 0; word-break: break-all; }
+  .vocab { margin-top: 8px; }
+  .vocab code { background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px;
+                padding: 1px 5px; margin: 0 3px 3px 0; display: inline-block; font-size: 11px; }
+  .hint { color: var(--muted); font-size: 12px; padding: 0 16px 10px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Astra</h1>
+  <span class="tag">开发者控制台</span>
+  <div class="status" id="status"></div>
+</header>
+
+<main>
+  <section class="pane">
+    <h2>对话<span class="spacer"></span>
+      <button type="button" id="load-history">拉取历史</button>
+    </h2>
+    <div class="scroll" id="chat"></div>
+    <form id="composer">
+      <input type="text" id="text" placeholder="说点什么…（回车发送）" autocomplete="off">
+      <button type="submit" class="primary" id="send">发送</button>
+    </form>
+    <div class="hint">
+      <span class="row">
+        <input type="radio" name="mode" id="mode-ws" value="ws" checked>
+        <label for="mode-ws">WebSocket（看事件流）</label>
+        <input type="radio" name="mode" id="mode-sync" value="sync">
+        <label for="mode-sync">同步（看完整 TurnResponse）</label>
+      </span>
+    </div>
+  </section>
+
+  <section class="pane">
+    <h2>事件流<span class="spacer"></span>
+      <button type="button" id="clear-events">清空</button>
+    </h2>
+    <div class="scroll" id="events"></div>
+    <details>
+      <summary>运行配置与协议词表</summary>
+      <div class="body" id="config">加载中…</div>
+    </details>
+  </section>
+</main>
+
+<script>
+"use strict";
+
+const CANONICAL = ["api", "database", "llm", "stt", "tts"];
+
+const state = {
+  sessionId: null,
+  conversationId: null,
+  socket: null,
+  busy: false,
+};
+
+const el = (id) => document.getElementById(id);
+
+/* ── 工具 ───────────────────────────────────────────── */
+
+function newUlid() {
+  // 控制台只需要一个稳定的随机字符串；服务端不校验格式
+  const alphabet = "0123456789ABCDEFGHJKMNPQRSTVWXYZ";
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (b) => alphabet[b % alphabet.length]).join("");
+}
+
+function line(parent, className, text) {
+  const node = document.createElement("div");
+  if (className) node.className = className;
+  node.textContent = text;          // 一律用 textContent，避免把模型输出当 HTML 解析
+  parent.appendChild(node);
+  return node;
+}
+
+function atBottom(node) {
+  return node.scrollHeight - node.scrollTop - node.clientHeight < 60;
+}
+
+/* ── Health ─────────────────────────────────────────── */
+
+async function refreshHealth() {
+  const box = el("status");
+  try {
+    const response = await fetch("/health");
+    const health = await response.json();
+    box.replaceChildren();
+
+    const overall = document.createElement("span");
+    overall.className = "chip";
+    const dot = document.createElement("span");
+    dot.className = "dot " + health.status;
+    overall.append(dot, document.createTextNode("overall " + health.status));
+    box.appendChild(overall);
+
+    for (const name of CANONICAL) {
+      const component = health.components[name];
+      const chip = document.createElement("span");
+      chip.className = "chip";
+      const d = document.createElement("span");
+      d.className = "dot " + component.status;
+      chip.append(d, document.createTextNode(name + " " + component.status));
+      if (component.latency_ms !== null && component.latency_ms !== undefined) {
+        chip.appendChild(document.createTextNode(" " + Math.round(component.latency_ms) + "ms"));
+      }
+      box.appendChild(chip);
+    }
+    if (health.schema_version !== null) {
+      const chip = document.createElement("span");
+      chip.className = "chip";
+      chip.textContent = "schema v" + health.schema_version;
+      box.appendChild(chip);
+    }
+  } catch (error) {
+    box.replaceChildren();
+    line(box, "chip", "health 不可达：" + error.message);
+  }
+}
+
+/* ── 配置与词表 ─────────────────────────────────────── */
+
+async function loadConfig() {
+  const box = el("config");
+  try {
+    const config = await fetch("/v1/config").then((r) => r.json());
+    box.replaceChildren();
+
+    const kv = document.createElement("dl");
+    kv.className = "kv";
+    for (const key of ["companion_id", "user_id", "llm_provider", "llm_model",
+                       "stt_provider", "tts_provider", "avatar_enabled"]) {
+      const dt = document.createElement("dt");
+      dt.textContent = key;
+      const dd = document.createElement("dd");
+      dd.textContent = String(config[key]);
+      kv.append(dt, dd);
+    }
+    box.appendChild(kv);
+
+    for (const [label, key] of [["情绪", "emotions"], ["动作", "actions"], ["音色", "voice_styles"]]) {
+      const wrap = document.createElement("div");
+      wrap.className = "vocab";
+      const title = document.createElement("div");
+      title.textContent = label + "（" + config[key].length + "）";
+      wrap.appendChild(title);
+      for (const word of config[key]) {
+        const code = document.createElement("code");
+        code.textContent = word;
+        wrap.appendChild(code);
+      }
+      box.appendChild(wrap);
+    }
+  } catch (error) {
+    box.textContent = "加载失败：" + error.message;
+  }
+}
+
+/* ── 事件流 ─────────────────────────────────────────── */
+
+function appendEvent(event) {
+  const box = el("events");
+  const stick = atBottom(box);
+
+  const cls = event.type === "turn.failed" || event.type === "error.protocol"
+    ? "evt error" : "evt";
+  const row = document.createElement("div");
+  row.className = cls;
+
+  const type = document.createElement("span");
+  type.className = "t";
+  type.textContent = event.type;
+
+  const payload = document.createElement("span");
+  payload.className = "p";
+  payload.textContent = JSON.stringify(event.payload);
+
+  row.append(type, payload);
+  box.appendChild(row);
+
+  if (stick) box.scrollTop = box.scrollHeight;
+}
+
+/* ── 对话渲染 ───────────────────────────────────────── */
+
+function addMessage(kind, text, meta) {
+  const box = el("chat");
+  const stick = atBottom(box);
+
+  const wrap = document.createElement("div");
+  wrap.className = "msg " + kind;
+
+  const who = document.createElement("div");
+  who.className = "who";
+  who.textContent = kind === "user" ? "你" : kind === "assistant" ? "Astra" : "系统";
+
+  const bubble = document.createElement("div");
+  bubble.className = "bubble";
+  bubble.textContent = text;
+
+  wrap.append(who, bubble);
+
+  if (meta) {
+    const metaNode = document.createElement("div");
+    metaNode.className = "meta";
+    metaNode.textContent = meta;
+    wrap.appendChild(metaNode);
+  }
+
+  box.appendChild(wrap);
+  if (stick) box.scrollTop = box.scrollHeight;
+  return wrap;
+}
+
+function handleEvent(event) {
+  appendEvent(event);
+  const payload = event.payload || {};
+
+  if (event.type === "conversation.created" || event.type === "turn.started") {
+    if (payload.conversation_id) state.conversationId = payload.conversation_id;
+  }
+
+  if (event.type === "assistant.text.completed") {
+    const emotion = payload.emotion || {};
+    const action = payload.action || {};
+    const voice = payload.voice || {};
+    addMessage(
+      "assistant",
+      payload.reply || "",
+      `emotion=${emotion.primary}(${emotion.intensity}) action=${action.name}(${action.intensity}) ` +
+      `voice=${voice.style}/${voice.speed}/${voice.pitch}`
+    );
+  }
+
+  if (event.type === "turn.failed") {
+    addMessage("failed", payload.reply || payload.message || "", "code=" + payload.code);
+  }
+
+  if (event.type === "turn.completed") {
+    addMessage(
+      "system",
+      "turn 完成",
+      `retries=${payload.retries} degraded=${payload.degraded} total=${payload.total_ms}ms`
+    );
+  }
+}
+
+/* ── WebSocket ──────────────────────────────────────── */
+
+function setBusy(busy) {
+  state.busy = busy;
+  el("send").disabled = busy;
+}
+
+function connect() {
+  const url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host +
+              "/ws/v1/session/" + state.sessionId;
+  const socket = new WebSocket(url);
+  state.socket = socket;
+
+  socket.addEventListener("open", () => appendEvent({ type: "ws.connected", payload: { url } }));
+  socket.addEventListener("close", () => {
+    appendEvent({ type: "ws.closed", payload: {} });
+    setBusy(false);
+  });
+  socket.addEventListener("error", () => appendEvent({ type: "ws.error", payload: {} }));
+  socket.addEventListener("message", (message) => {
+    let event;
+    try {
+      event = JSON.parse(message.data);
+    } catch (error) {
+      appendEvent({ type: "ws.unparsable", payload: { error: String(error) } });
+      return;
+    }
+    handleEvent(event);
+    if (event.type === "turn.completed" || event.type === "turn.failed") setBusy(false);
+  });
+}
+
+function sendOverSocket(text) {
+  state.socket.send(JSON.stringify({
+    type: "input.user_text", version: 1, payload: { text },
+  }));
+}
+
+/* ── 同步模式 ───────────────────────────────────────── */
+
+async function sendSync(text) {
+  const body = { content: text };
+  if (state.conversationId) body.conversation_id = state.conversationId;
+
+  const response = await fetch("/v1/chat/turns", {
+    method: "POST",
+    headers: { "Content-Type": "application/json; charset=utf-8" },
+    body: JSON.stringify(body),
+  });
+  const result = await response.json();
+
+  state.conversationId = result.conversation_id;
+  addMessage("user", text);
+
+  if (result.status === "ok") {
+    addMessage(
+      "assistant",
+      result.reply,
+      `emotion=${result.response.emotion.primary} action=${result.response.action.name} ` +
+      `stubs=${result.stubs_used.join(",")} retries=${result.retries} ` +
+      `degraded=${result.degraded} total=${result.timings.total_ms}ms`
+    );
+  } else {
+    addMessage("failed", result.reply, `code=${result.failure.code} recoverable=${result.failure.recoverable}`);
+  }
+  appendEvent({ type: "sync.turn", payload: result });
+}
+
+/* ── 历史 ───────────────────────────────────────────── */
+
+async function loadHistory() {
+  if (!state.conversationId) {
+    addMessage("system", "还没有会话——先发一条消息。", "");
+    return;
+  }
+  const response = await fetch("/v1/conversations/" + state.conversationId + "/messages");
+  if (!response.ok) {
+    addMessage("failed", "拉取历史失败：HTTP " + response.status, "");
+    return;
+  }
+  const history = await response.json();
+  const box = el("chat");
+  box.replaceChildren();
+  for (const message of history.messages) {
+    addMessage(
+      message.role === "user" ? "user" : "assistant",
+      message.content,
+      message.id + (message.metadata.status ? " status=" + message.metadata.status : "")
+    );
+  }
+}
+
+/* ── 启动 ───────────────────────────────────────────── */
+
+function currentMode() {
+  return el("mode-sync").checked ? "sync" : "ws";
+}
+
+el("composer").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const input = el("text");
+  const text = input.value.trim();
+  if (!text || state.busy) return;
+
+  input.value = "";
+  setBusy(true);
+
+  if (currentMode() === "sync") {
+    addMessage("user", text);
+    try {
+      await sendSync(text);
+    } catch (error) {
+      addMessage("failed", "请求失败：" + error.message, "");
+    } finally {
+      setBusy(false);
+    }
+    return;
+  }
+
+  addMessage("user", text);
+  sendOverSocket(text);
+});
+
+el("load-history").addEventListener("click", () => {
+  loadHistory().catch((error) => addMessage("failed", String(error), ""));
+});
+
+el("clear-events").addEventListener("click", () => el("events").replaceChildren());
+
+state.sessionId = newUlid();
+addMessage("system", "开发者控制台就绪。输入文字回车发送。", "session=" + state.sessionId);
+connect();
+refreshHealth();
+loadConfig();
+setInterval(refreshHealth, 5000);
+</script>
+</body>
+</html>
