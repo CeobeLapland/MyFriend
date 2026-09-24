@@ -1,5 +1,11 @@
 # ADR 0011 — Structured Output: M1 Profile and Normalization Policy
 
+> **M2 更新（见 ADR 0018）**：`memory_candidates` 已按本 ADR 的"逐阶段加回"原则
+> 加回 profile，但采用**精简形态**——每条只有 `type` + `content`，不含
+> `importance` / `confidence` / `expires_in_days`。实测 +2.4s（完整形态 +4.5s），
+> 且打分本就该由代码按 `docs/06` §3 算。当前 profile 是 **5 字段**。
+> 本 ADR 其余结论（不加 enum、不加 min/max、重试矩阵）不变。
+
 ## Decision
 
 ### 1. M1 只发送 4 字段 profile

@@ -90,6 +90,18 @@
   .vocab code { background: var(--panel-2); border: 1px solid var(--border); border-radius: 4px;
                 padding: 1px 5px; margin: 0 3px 3px 0; display: inline-block; font-size: 11px; }
   .hint { color: var(--muted); font-size: 12px; padding: 0 16px 10px; }
+  .mem { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; margin-bottom: 8px;
+         background: var(--panel-2); }
+  .mem .top { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .mem .type { font-family: var(--mono); font-size: 11px; color: var(--accent);
+               border: 1px solid var(--border); border-radius: 4px; padding: 0 5px; }
+  .mem .score { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-left: auto; }
+  .mem .text { white-space: pre-wrap; word-break: break-word; }
+  .mem .foot { font-size: 11px; color: var(--muted); font-family: var(--mono); margin-top: 4px;
+               display: flex; align-items: center; gap: 8px; }
+  .mem .foot button { padding: 2px 8px; font-size: 11px; border-radius: 6px; margin-left: auto; }
+  .toolbar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 8px; }
+  .toolbar button { padding: 4px 10px; font-size: 12px; }
 </style>
 </head>
 <body>
@@ -127,6 +139,21 @@
     <details>
       <summary>运行配置与协议词表</summary>
       <div class="body" id="config">加载中…</div>
+    </details>
+    <details id="memory-panel">
+      <summary>记忆（M2）</summary>
+      <div class="body">
+        <div class="toolbar">
+          <label class="row">
+            <input type="checkbox" id="memory-enabled">
+            <span>启用记忆</span>
+          </label>
+          <span class="chip" id="memory-count">…</span>
+          <button type="button" id="memory-refresh">刷新</button>
+          <button type="button" id="memory-clear">清空全部</button>
+        </div>
+        <div id="memory-list"></div>
+      </div>
     </details>
   </section>
 </main>
@@ -244,6 +271,89 @@ async function loadConfig() {
   }
 }
 
+/* ── 记忆（M2）──────────────────────────────────────── */
+
+function memoryRow(memory) {
+  const wrap = document.createElement("div");
+  wrap.className = "mem";
+
+  const top = document.createElement("div");
+  top.className = "top";
+  const type = document.createElement("span");
+  type.className = "type";
+  type.textContent = memory.type;
+  const score = document.createElement("span");
+  score.className = "score";
+  score.textContent = `imp ${memory.importance.toFixed(2)} · conf ${memory.confidence.toFixed(2)}`;
+  top.append(type, score);
+
+  const text = document.createElement("div");
+  text.className = "text";
+  text.textContent = memory.content;
+
+  const foot = document.createElement("div");
+  foot.className = "foot";
+  const id = document.createElement("span");
+  id.textContent = memory.id;
+  const expires = document.createElement("span");
+  expires.textContent = memory.expires_at ? "expires " + memory.expires_at.slice(0, 10) : "长期";
+  const remove = document.createElement("button");
+  remove.type = "button";
+  remove.textContent = "删除";
+  remove.addEventListener("click", () => {
+    removeMemory(memory.id).catch((error) => addMessage("failed", String(error), ""));
+  });
+  foot.append(id, expires, remove);
+
+  wrap.append(top, text, foot);
+  return wrap;
+}
+
+async function loadMemories() {
+  const list = el("memory-list");
+  try {
+    const [settings, page] = await Promise.all([
+      fetch("/v1/memories/settings").then((r) => r.json()),
+      fetch("/v1/memories").then((r) => r.json()),
+    ]);
+    el("memory-enabled").checked = settings.enabled;
+    el("memory-count").textContent = page.total + " 条";
+
+    list.replaceChildren();
+    if (page.memories.length === 0) {
+      line(list, "chip", "还没有记忆。告诉 AI 一个稳定偏好试试。");
+      return;
+    }
+    for (const memory of page.memories) list.appendChild(memoryRow(memory));
+  } catch (error) {
+    list.textContent = "加载失败：" + error.message;
+  }
+}
+
+async function removeMemory(memoryId) {
+  const response = await fetch("/v1/memories/" + memoryId, { method: "DELETE" });
+  if (!response.ok && response.status !== 204) {
+    throw new Error("删除失败：HTTP " + response.status);
+  }
+  await loadMemories();
+}
+
+async function clearMemories() {
+  const response = await fetch("/v1/memories/clear", { method: "POST" });
+  if (!response.ok) throw new Error("清空失败：HTTP " + response.status);
+  await loadMemories();
+}
+
+async function setMemoryEnabled(enabled) {
+  const response = await fetch("/v1/memories/settings", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+  if (!response.ok) throw new Error("切换失败：HTTP " + response.status);
+  await loadMemories();
+}
+
 /* ── 事件流 ─────────────────────────────────────────── */
 
 function appendEvent(event) {
@@ -330,7 +440,11 @@ function handleEvent(event) {
       "turn 完成",
       `retries=${payload.retries} degraded=${payload.degraded} total=${payload.total_ms}ms`
     );
+    loadMemories().catch(() => {});
   }
+
+  // 记忆事件到达时顺手刷新面板——这是"记忆到底有没有在工作"最直接的观察点
+  if (event.type.startsWith("memory.")) loadMemories().catch(() => {});
 }
 
 /* ── WebSocket ──────────────────────────────────────── */
@@ -393,12 +507,14 @@ async function sendSync(text) {
       result.reply,
       `emotion=${result.response.emotion.primary} action=${result.response.action.name} ` +
       `stubs=${result.stubs_used.join(",")} retries=${result.retries} ` +
-      `degraded=${result.degraded} total=${result.timings.total_ms}ms`
+      `degraded=${result.degraded} total=${result.timings.total_ms}ms ` +
+      `mem=${result.memories_retrieved}/${result.memories_created}`
     );
   } else {
     addMessage("failed", result.reply, `code=${result.failure.code} recoverable=${result.failure.recoverable}`);
   }
   appendEvent({ type: "sync.turn", payload: result });
+  loadMemories().catch(() => {});
 }
 
 /* ── 历史 ───────────────────────────────────────────── */
@@ -462,11 +578,29 @@ el("load-history").addEventListener("click", () => {
 
 el("clear-events").addEventListener("click", () => el("events").replaceChildren());
 
+el("memory-refresh").addEventListener("click", () => {
+  loadMemories().catch((error) => addMessage("failed", String(error), ""));
+});
+
+el("memory-clear").addEventListener("click", () => {
+  clearMemories().catch((error) => addMessage("failed", String(error), ""));
+});
+
+el("memory-enabled").addEventListener("change", (event) => {
+  setMemoryEnabled(event.target.checked).catch((error) => addMessage("failed", String(error), ""));
+});
+
+// 展开面板时才拉数据，避免每次打开控制台都多打两个请求
+el("memory-panel").addEventListener("toggle", (event) => {
+  if (event.target.open) loadMemories().catch(() => {});
+});
+
 state.sessionId = newUlid();
 addMessage("system", "开发者控制台就绪。输入文字回车发送。", "session=" + state.sessionId);
 connect();
 refreshHealth();
 loadConfig();
+loadMemories();
 setInterval(refreshHealth, 5000);
 </script>
 </body>

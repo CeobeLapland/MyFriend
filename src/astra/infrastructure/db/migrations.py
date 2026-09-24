@@ -106,11 +106,15 @@ def upgrade(
     """应用所有未执行的迁移，返回本次实际应用的版本号列表。
 
     幂等：重复调用不会重复应用，也不会报错。
+
+    **加载 sqlite-vec 扩展**：``0003`` 会建 ``vec0`` 虚拟表，而虚拟表的 DDL 需要
+    扩展已加载。扩展加载在这里是幂等且廉价的，所以统一开启，避免「哪些迁移需要
+    扩展」这种隐式耦合（ADR 0018）。
     """
     migrations = discover(migrations_dir)
     applied: list[str] = []
 
-    with open_connection(db_path) as conn:
+    with open_connection(db_path, load_extensions=True) as conn:
         conn.execute(_SCHEMA_MIGRATIONS_DDL)
         already = {
             row["version"]: row["checksum"]

@@ -1,21 +1,30 @@
 """一次 turn 的生命周期（`docs/02_ARCHITECTURE.md` §2.2）。
 
-流水线与 M1 落点：
+流水线与当前落点：
 
 ===========================  ==============================================
-步骤                          M1
+步骤                         状态
 ===========================  ==============================================
 input_received               实现
 normalize_input              实现（strip + 长度上限 + 空输入拒绝）
-retrieve_memory              **空桩** —— M2 实现
+retrieve_memory              **M2 实现**（检索结果填进 prompt 的 Layer 5）
 build_context                实现
 ask_llm                      实现（按 ADR 0011 的重试矩阵，最多重试 1 次）
 validate_response            实现（``response_parser``）
 apply_state_delta            **空桩** —— M3 实现
 persist_conversation         实现（一个事务写 user + assistant）
-enqueue_memory_extraction    **空桩** —— M2 实现
-dispatch_events              M1a 不发布；M1b 接入事件总线
+enqueue_memory_extraction    **M2 实现**（候选打分 / 去重 / 落库）
+dispatch_events              M1b 接入事件总线
 ===========================  ==============================================
+
+**M2 的两处实现要点**：
+
+1. **记忆子系统整体降级**。``retrieve`` / ``ingest`` 的任何失败都只记日志，
+   绝不让 turn 失败——LLM 已经成功，用户必须拿到回复。这与 ``HealthService``
+   隔离探针异常、``Orchestrator`` 隔离 LLM 异常是同一个模式（ADR 0014）。
+2. **提取排在消息持久化之后**（对齐 `docs/02` §2.2 的步骤顺序），这样候选能带上
+   ``source_message_id``。但**消息事件先发、提取后跑**——回复要尽快到达用户，
+   记忆落库是事后记账，不该拖慢 ``assistant.text.completed``。
 
 **空桩的形态**：返回合法空值让下游正常走完，绝不 ``raise NotImplementedError``、
 绝不 ``pass``——后者会让"忘了实现"和"刻意留空"长得一样。每个空桩都会记一条
@@ -32,7 +41,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from typing import Any
@@ -40,6 +49,7 @@ from typing import Any
 from astra.application.assistant_schema import build_response_format
 from astra.application.conversation_service import ConversationService, ResolvedConversation
 from astra.application.event_bus import EventBus
+from astra.application.memory_service import MemoryService
 from astra.application.prompt_builder import (
     ConversationContext,
     PromptBudget,
@@ -57,6 +67,7 @@ from astra.domain.errors import (
 from astra.domain.events import EventType, make_event
 from astra.domain.ids import new_id
 from astra.domain.llm import LLMMessage, LLMRequest, LLMResponse, ReasoningEffort
+from astra.domain.memory import Memory
 from astra.domain.persona import Persona
 from astra.domain.ports import LLMProvider
 from astra.domain.response import AssistantResponse
@@ -66,10 +77,8 @@ _logger = logging.getLogger(__name__)
 #: 首次调用 + 最多重试 1 次
 MAX_ATTEMPTS = 2
 
-#: M1 刻意留空的阶段。见模块文档字符串。
-STUB_STAGES: frozenset[str] = frozenset(
-    {"retrieve_memory", "apply_state_delta", "enqueue_memory_extraction"}
-)
+#: 仍然刻意留空的阶段。见模块文档字符串。
+STUB_STAGES: frozenset[str] = frozenset({"apply_state_delta"})
 
 #: 由**代码**拥有的诚实降级文案。
 #: 不能问 LLM——LLM 正是挂掉的那个。人格文件可用同名错误码覆盖（ADR 0014）。
@@ -140,6 +149,10 @@ class TurnResult:
     model: str | None = None
     retries: int = 0
     degraded: bool = False
+    #: M2 可观测性：本轮注入 prompt 的记忆条数 / 新建的记忆条数。
+    #: 新建数不含"合并到既有记忆"的那些（那是更新，不是新建）。
+    memories_retrieved: int = 0
+    memories_created: int = 0
 
     @property
     def succeeded(self) -> bool:
@@ -164,12 +177,15 @@ class Orchestrator:
         persona: Persona,
         config: TurnConfig,
         bus: EventBus | None = None,
+        memory: MemoryService | None = None,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._llm = llm
         self._conversations = conversations
         self._persona = persona
         self._config = config
+        #: 为 ``None`` 时记忆子系统整体缺席（不检索、不写入），turn 照常
+        self._memory = memory
         #: 没有订阅者时 publish 是空操作，所以默认自带一个 bus 不会产生副作用
         self._bus = bus if bus is not None else EventBus()
         self._clock = clock if clock is not None else (lambda: datetime.now(tz=UTC))
@@ -240,7 +256,8 @@ class Orchestrator:
             )
 
         try:
-            context = await self._build_context(conversation_id, user_text)
+            memories = await self._retrieve_memory(user_text)
+            context = await self._build_context(conversation_id, user_text, memories=memories)
             llm_response, outcome, retries = await self._ask_and_parse(context, correlation_id)
         except AstraError as exc:
             return await self._persist_failure(
@@ -248,7 +265,6 @@ class Orchestrator:
             )
 
         await self._apply_state_delta(outcome)  # 空桩
-        await self._enqueue_memory_extraction(outcome)  # 空桩
 
         user_message, assistant_message = await self._conversations.append_turn(
             conversation_id=conversation_id,
@@ -264,6 +280,12 @@ class Orchestrator:
             correlation_id, assistant_message.id, conversation_id, turn_id, Role.ASSISTANT
         )
         self._publish_assistant_output(correlation_id, turn_id, outcome.response)
+
+        # 提取排在事件之后：回复要尽快到达用户，记忆落库是事后记账。
+        # 放在 append_turn 之后是为了拿到 user_message.id 作为 provenance。
+        created = await self._enqueue_memory_extraction(
+            outcome, user_text=user_text, source_message_id=user_message.id
+        )
 
         total_ms = _elapsed_ms(started)
         self._publish(
@@ -289,19 +311,21 @@ class Orchestrator:
             model=llm_response.model,
             retries=retries,
             degraded=outcome.degraded,
+            memories_retrieved=len(memories),
+            memories_created=created,
         )
 
-    async def _build_context(self, conversation_id: str, user_text: str) -> ConversationContext:
+    async def _build_context(
+        self, conversation_id: str, user_text: str, *, memories: Sequence[Memory] = ()
+    ) -> ConversationContext:
         history = await self._conversations.load_history(conversation_id)
-
-        # 空桩 1：M2 会用检索到的记忆填充 prompt 的 Layer 5
-        await self._retrieve_memory(conversation_id, user_text)
 
         context = build_conversation_context(
             self._persona,
             history=history,
             user_text=user_text,
             budget=self._config.history_budget,
+            memories=memories,
         )
 
         if context.history_window.dropped:
@@ -367,30 +391,67 @@ class Orchestrator:
             reasoning_effort=ReasoningEffort.NONE,
         )
 
-    # ── 空桩 ────────────────────────────────────────────
+    # ── 记忆（M2）───────────────────────────────────────
 
-    async def _retrieve_memory(self, conversation_id: str, user_text: str) -> None:
-        """M2 实现。M1 什么都不检索——这是刻意的降级行为，不是 TODO。
+    async def _retrieve_memory(self, user_text: str) -> tuple[Memory, ...]:
+        """检索与用户输入相关的记忆，填进 prompt 的 Layer 5。
 
-        M2 会把这里换成"检索相关记忆"，并把结果填进 prompt 的 Layer 5。
+        **任何失败都返回空元组**——记忆缺席只是"这次没想起来"，而抛出去会让
+        整轮对话失败。``MemoryService`` 内部已经吞掉了 embedding / 存储异常，
+        这里的兜底是为了它将来新增代码路径时也不会漏。
         """
-        _logger.debug(
-            "stub stage skipped",
-            extra={"event": "turn.stage.stub", "detail": "retrieve_memory"},
-        )
+        if self._memory is None:
+            return ()
+
+        try:
+            hits = await self._memory.retrieve(user_text)
+        except Exception:
+            # 记忆失败绝不能让 turn 失败：LLM 已经成功，用户必须拿到回复
+            _logger.warning(
+                "memory retrieval failed; continuing without memories",
+                extra={"event": "memory.failed", "detail": {"stage": "orchestrator.retrieve"}},
+            )
+            return ()
+
+        return tuple(hit.memory for hit in hits)
+
+    async def _enqueue_memory_extraction(
+        self, outcome: ParseOutcome, *, user_text: str, source_message_id: str
+    ) -> int:
+        """把本轮提取出的候选落库（打分 / 去重 / 向量化）。
+
+        **方法名保留 ``enqueue_``**（对齐 `docs/02` §2.2 的流水线命名），但 M2 是
+        **在 turn 内 await 完成**、不投递后台队列——这是"内联·精简候选"的直接推论：
+        候选随回复一起产出，落库即持久，用户"说完就关程序"也不会丢（ADR 0018）。
+
+        返回新建的记忆条数。**失败只记日志并返回 0**，turn 照常成功。
+        """
+        if self._memory is None:
+            return 0
+
+        candidates = outcome.response.memory_candidates
+        if not candidates:
+            return 0
+
+        try:
+            created = await self._memory.ingest_candidates(
+                candidates, user_text=user_text, source_message_id=source_message_id
+            )
+        except Exception:
+            # 同上：记忆落库失败只是"这次没记住"，turn 仍然成功
+            _logger.warning(
+                "memory extraction failed; turn is unaffected",
+                extra={"event": "memory.failed", "detail": {"stage": "orchestrator.ingest"}},
+            )
+            return 0
+
+        return len(created)
 
     async def _apply_state_delta(self, outcome: ParseOutcome) -> None:
-        """M3 实现。M1 不做任何事——这是刻意的降级行为，不是 TODO。"""
+        """M3 实现。M2 不做任何事——这是刻意的降级行为，不是 TODO。"""
         _logger.debug(
             "stub stage skipped",
             extra={"event": "turn.stage.stub", "detail": "apply_state_delta"},
-        )
-
-    async def _enqueue_memory_extraction(self, outcome: ParseOutcome) -> None:
-        """M2 实现。M1 不做任何事——这是刻意的降级行为，不是 TODO。"""
-        _logger.debug(
-            "stub stage skipped",
-            extra={"event": "turn.stage.stub", "detail": "enqueue_memory_extraction"},
         )
 
     # ── 失败处理 ────────────────────────────────────────

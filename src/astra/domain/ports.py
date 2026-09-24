@@ -17,6 +17,7 @@ from typing import Protocol, runtime_checkable
 from astra.domain.conversation import Conversation, Message
 from astra.domain.health import ComponentHealth
 from astra.domain.llm import LLMRequest, LLMResponse
+from astra.domain.memory import Memory, MemoryFilter
 
 
 class HealthProbe(Protocol):
@@ -89,4 +90,101 @@ class ConversationRepository(Protocol):
 
     async def load_messages(self, conversation_id: str) -> tuple[Message, ...]:
         """按 **id 升序**返回该会话的全部消息（ADR 0012：不能用 created_at 排序）。"""
+        ...
+
+
+@runtime_checkable
+class EmbeddingProvider(Protocol):
+    """文本向量化后端（M2）。
+
+    ``dim`` 是启动期校验的关键：``memory_vectors`` 的 vec0 表把维度写死在 DDL 里
+    （迁移不可改），所以装配期必须比对，不一致就快速失败而不是运行时出错（ADR 0018）。
+    """
+
+    @property
+    def model(self) -> str:
+        """模型标识，落进 ``memory_embeddings.embedding_model``。"""
+        ...
+
+    @property
+    def dim(self) -> int:
+        """向量维度。"""
+        ...
+
+    async def embed(self, texts: Sequence[str]) -> tuple[tuple[float, ...], ...]:
+        """批量向量化，返回顺序与 ``texts`` 一一对应。
+
+        失败时抛 :mod:`astra.domain.errors` 里的异常——与 ``LLMProvider`` 同一约定，
+        由调用方（``MemoryService``）统一降级，而不是返回错误对象。
+        """
+        ...
+
+
+class MemoryStore(Protocol):
+    """记忆的持久化端口：**事实表 + 向量索引 + 运行时开关**。
+
+    三者放在同一个端口下是刻意的：它们在同一份 SQLite 文件里，而
+    ``docs/04`` §2 / ``docs/11`` §4 要求"删除记忆时必须同时处理向量索引"。
+    拆成多个端口会让这条不变量失去单一入口。
+    """
+
+    async def add(self, memory: Memory, embedding: Sequence[float]) -> None:
+        """写入一条记忆及其向量（事实 + embedding + 索引，同一事务）。"""
+        ...
+
+    async def get(self, memory_id: str) -> Memory | None:
+        """按 id 读取；不存在返回 ``None``。"""
+        ...
+
+    async def get_many(self, memory_ids: Sequence[str]) -> tuple[Memory, ...]:
+        """批量读取。**返回顺序跟随入参顺序**，缺失的 id 被跳过。"""
+        ...
+
+    async def list(self, query: MemoryFilter) -> tuple[Memory, ...]:
+        """按过滤条件列出（``ORDER BY id``）。"""
+        ...
+
+    async def update(self, memory: Memory, embedding: Sequence[float] | None = None) -> None:
+        """更新一条记忆。``embedding`` 非空时同时更新向量（内容变了才需要）。"""
+        ...
+
+    async def delete(self, memory_id: str) -> bool:
+        """**真正删除**事实、embedding 与向量索引（`docs/04` §2）。返回是否存在。"""
+        ...
+
+    async def delete_all(self, *, user_id: str, companion_id: str) -> int:
+        """清空该用户的全部记忆，返回删除条数。"""
+        ...
+
+    async def touch_accessed(self, memory_ids: Sequence[str], *, at: datetime) -> None:
+        """更新 ``last_accessed_at``（`docs/06` §4 的 ``access_frequency`` 需要它）。"""
+        ...
+
+    async def search_similar(
+        self,
+        vector: Sequence[float],
+        *,
+        user_id: str,
+        companion_id: str,
+        now: datetime,
+        limit: int,
+    ) -> tuple[tuple[str, float], ...]:
+        """向量近邻检索，返回 ``(memory_id, distance)``，按距离升序。
+
+        只返回**可检索**的记忆（未归档、未过期）；重排序（importance / recency /
+        access / relationship）不在这里做——那需要 ``docs/06`` §4 的完整公式，
+        由 ``MemoryService`` 负责。
+        """
+        ...
+
+    async def count(self, *, user_id: str, companion_id: str) -> int:
+        """该用户当前未归档的记忆条数。"""
+        ...
+
+    async def get_flag(self, key: str) -> str | None:
+        """读 ``app_flags``（M2 只用到 ``memory.enabled`` 一个键）。"""
+        ...
+
+    async def set_flag(self, key: str, value: str, *, at: datetime) -> None:
+        """写 ``app_flags``。"""
         ...

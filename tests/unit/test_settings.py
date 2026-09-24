@@ -37,6 +37,16 @@ def test_defaults() -> None:
     assert settings.llm_history_max_chars == 12000
     assert settings.health_probe_timeout_s == 2.0
     assert settings.health_db_required is True
+    # M2
+    assert settings.embedding_provider == "none"
+    assert settings.embedding_model == "text-embedding-nomic-embed-text-v1.5"
+    assert settings.embedding_dim == 768
+    assert settings.memory_enabled is True
+    assert settings.memory_top_k == 5
+    assert settings.memory_max_candidates_per_turn == 3
+    assert settings.memory_dedup_threshold == 0.90
+    assert settings.memory_min_similarity == 0.70
+    assert settings.memory_context_max_chars == 2000
 
 
 def test_reasoning_effort_can_be_overridden(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -145,3 +155,63 @@ def test_get_settings_is_cached() -> None:
     from astra.settings import get_settings
 
     assert get_settings() is get_settings()
+
+
+# ── 检索权重（docs/06 §4）───────────────────────────────
+
+
+def test_retrieval_weights_default_to_a_weighted_average() -> None:
+    settings = Settings(_env_file=None)
+
+    total = (
+        settings.memory_weight_semantic
+        + settings.memory_weight_importance
+        + settings.memory_weight_recency
+        + settings.memory_weight_access
+        + settings.memory_weight_relationship
+    )
+    assert total == pytest.approx(1.0)
+
+
+def test_retrieval_weights_reject_a_broken_sum(monkeypatch: pytest.MonkeyPatch) -> None:
+    """和不为 1 会让 memory_min_score 的含义随配置漂移——启动期就该拒绝。"""
+    monkeypatch.setenv("ASTRA_MEMORY_WEIGHT_SEMANTIC", "0.9")
+
+    with pytest.raises(ValidationError, match=r"must sum to 1\.0"):
+        Settings(_env_file=None)
+
+
+def test_retrieval_weights_can_be_rebalanced(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ASTRA_MEMORY_WEIGHT_SEMANTIC", "0.60")
+    monkeypatch.setenv("ASTRA_MEMORY_WEIGHT_IMPORTANCE", "0.10")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.memory_weight_semantic == 0.60
+    assert settings.memory_weight_importance == 0.10
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    [
+        ("ASTRA_MEMORY_WEIGHT_SEMANTIC", "-0.1"),
+        ("ASTRA_MEMORY_DEDUP_THRESHOLD", "1.5"),
+        ("ASTRA_MEMORY_MIN_SIMILARITY", "-1"),
+        ("ASTRA_MEMORY_TOP_K", "-1"),
+        ("ASTRA_EMBEDDING_DIM", "0"),
+        ("ASTRA_EMBEDDING_PROVIDER", "openai"),
+    ],
+)
+def test_out_of_range_memory_settings_are_rejected(
+    monkeypatch: pytest.MonkeyPatch, key: str, value: str
+) -> None:
+    monkeypatch.setenv(key, value)
+
+    with pytest.raises(ValidationError):
+        Settings(_env_file=None)
+
+
+def test_embedding_provider_can_be_set(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ASTRA_EMBEDDING_PROVIDER", "lmstudio")
+
+    assert Settings(_env_file=None).embedding_provider == "lmstudio"

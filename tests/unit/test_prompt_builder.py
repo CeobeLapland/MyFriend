@@ -5,10 +5,12 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
 
+from astra.domain.memory import Memory, MemoryType
 from astra.domain.persona import Communication, Identity, Persona
 from astra.domain.prompt import (
     BASE_HARD_CONSTRAINTS,
@@ -16,17 +18,24 @@ from astra.domain.prompt import (
     SECTION_IDENTITY,
     SECTION_OUTPUT_FORMAT,
     SECTION_PERSONALITY,
+    SECTION_RELEVANT_MEMORIES,
     SECTION_SPEECH_STYLE,
     build_system_prompt,
 )
-from astra.domain.vocabulary import ACTION_CHOICES, EMOTION_CHOICES, VOICE_STYLE_CHOICES
+from astra.domain.vocabulary import (
+    ACTION_CHOICES,
+    EMOTION_CHOICES,
+    MEMORY_TYPE_CHOICES,
+    VOICE_STYLE_CHOICES,
+)
 from astra.infrastructure.persona.toml_loader import load_persona
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 SHIPPED_PERSONA = _REPO_ROOT / "personas" / "astra.toml"
 
-#: M2/M3/M6 才会出现的层标题。M1 里它们绝不能出现（哪怕是空标题）。
-UNIMPLEMENTED_SECTIONS = ("CURRENT STATE", "MEMORY", "MEMORIES", "TOOLS")
+#: 尚未实现的层标题。它们绝不能出现（哪怕是空标题）。
+#: Layer 5（RELEVANT MEMORIES）在 M2 已实现，所以不在这个列表里。
+UNIMPLEMENTED_SECTIONS = ("CURRENT STATE", "TOOLS")
 
 
 @pytest.fixture(scope="module")
@@ -53,6 +62,27 @@ def _minimal_persona(**overrides: object) -> Persona:
     return Persona(**params)  # type: ignore[arg-type]
 
 
+def _memory(
+    memory_id: str = "01J000000000000000000000AA",
+    *,
+    content: str = "用户喜欢深夜写代码",
+    importance: float = 0.80,
+    confidence: float = 0.90,
+    last_accessed_at: object = None,
+) -> Memory:
+    return Memory(
+        id=memory_id,
+        user_id="local",
+        companion_id="astra",
+        type=MemoryType.PREFERENCE,
+        content=content,
+        created_at=datetime(2026, 9, 24, 12, 0, tzinfo=UTC),
+        importance=importance,
+        confidence=confidence,
+        last_accessed_at=last_accessed_at,  # type: ignore[arg-type]
+    )
+
+
 # ── 确定性 ──────────────────────────────────────────────
 
 
@@ -77,13 +107,14 @@ def test_trait_order_is_independent_of_mapping_order() -> None:
 
 
 def test_sections_appear_in_documented_order(persona: Persona) -> None:
-    prompt = build_system_prompt(persona)
+    prompt = build_system_prompt(persona, memories=(_memory(),))
 
     positions = [
         prompt.index(SECTION_HARD_CONSTRAINTS),
         prompt.index(SECTION_IDENTITY),
         prompt.index(SECTION_PERSONALITY),
         prompt.index(SECTION_SPEECH_STYLE),
+        prompt.index(SECTION_RELEVANT_MEMORIES),
         prompt.index(SECTION_OUTPUT_FORMAT),
     ]
 
@@ -91,8 +122,8 @@ def test_sections_appear_in_documented_order(persona: Persona) -> None:
 
 
 def test_unimplemented_layers_are_omitted(persona: Persona) -> None:
-    """层 4/5/7 在 M1 必须整段省略——空标题会误导模型以为存在相应信息。"""
-    prompt = build_system_prompt(persona)
+    """层 4/7 仍要整段省略——空标题会误导模型以为存在相应信息。"""
+    prompt = build_system_prompt(persona, memories=(_memory(),))
 
     for section in UNIMPLEMENTED_SECTIONS:
         assert section not in prompt
@@ -194,17 +225,35 @@ def test_vocabulary_is_rendered_in_output_format(persona: Persona) -> None:
         assert style in output_section
 
 
-def test_output_format_lists_all_four_fields(persona: Persona) -> None:
+def test_output_format_lists_all_five_fields(persona: Persona) -> None:
+    prompt = build_system_prompt(persona)
+    output_section = prompt[prompt.index(SECTION_OUTPUT_FORMAT) :]
+
+    for field in ("reply", "emotion", "action", "voice", "memory_candidates"):
+        assert field in output_section
+
+    # 仍然延后的字段不应出现在 prompt 里，避免模型多写无用 token
+    for absent in ("state_delta", "tool_calls"):
+        assert absent not in output_section
+
+
+def test_output_format_lists_memory_type_vocabulary(persona: Persona) -> None:
+    """候选的 type 也必须给英文词表——与情绪/动作同理，否则会被归一化掉。"""
     output_section = build_system_prompt(persona)[
         build_system_prompt(persona).index(SECTION_OUTPUT_FORMAT) :
     ]
 
-    for field in ("reply", "emotion", "action", "voice"):
-        assert field in output_section
+    for memory_type in MEMORY_TYPE_CHOICES:
+        assert memory_type in output_section
 
-    # M1 不发送的字段不应出现在 prompt 里，避免模型多写无用 token
-    for absent in ("memory_candidates", "state_delta", "tool_calls"):
-        assert absent not in output_section
+
+def test_output_format_discourages_always_emitting_candidates(persona: Persona) -> None:
+    """docs/05 §8：候选**不是每轮都创建**。必须明说，否则模型会硬编一条。"""
+    output_section = build_system_prompt(persona)[
+        build_system_prompt(persona).index(SECTION_OUTPUT_FORMAT) :
+    ]
+
+    assert "空数组" in output_section
 
 
 def test_prompt_does_not_embed_raw_json_schema(persona: Persona) -> None:
@@ -213,3 +262,75 @@ def test_prompt_does_not_embed_raw_json_schema(persona: Persona) -> None:
 
     assert "additionalProperties" not in prompt
     assert '"type": "object"' not in prompt
+
+
+# ── Layer 5：RELEVANT MEMORIES（M2）─────────────────────
+
+
+def test_no_memories_omits_the_layer_entirely(persona: Persona) -> None:
+    """空则整段省略——空标题会让模型以为"系统知道些什么但没说"。"""
+    prompt = build_system_prompt(persona)
+
+    assert SECTION_RELEVANT_MEMORIES not in prompt
+
+
+def test_memories_are_rendered_with_their_scores(persona: Persona) -> None:
+    """docs/05 §5：必须给出 importance / confidence，模型才能决定表述的确定程度。"""
+    prompt = build_system_prompt(persona, memories=(_memory(),))
+
+    assert SECTION_RELEVANT_MEMORIES in prompt
+    assert "content: 用户喜欢深夜写代码" in prompt
+    assert "importance: 0.80" in prompt
+    assert "confidence: 0.90" in prompt
+
+
+def test_memory_rendering_is_deterministic(persona: Persona) -> None:
+    memories = (_memory("m1", content="事实一"), _memory("m2", content="事实二"))
+
+    assert build_system_prompt(persona, memories=memories) == build_system_prompt(
+        persona, memories=memories
+    )
+
+
+def test_memories_keep_the_order_they_were_given(persona: Persona) -> None:
+    """排序由 MemoryService 负责（按总分）；prompt 不重排，否则会出现两份排序逻辑。"""
+    prompt = build_system_prompt(
+        persona, memories=(_memory("m1", content="排第一"), _memory("m2", content="排第二"))
+    )
+
+    assert prompt.index("排第一") < prompt.index("排第二")
+
+
+def test_last_accessed_is_rendered_when_present(persona: Persona) -> None:
+    accessed = datetime(2026, 9, 20, 8, 0, tzinfo=UTC)
+
+    prompt = build_system_prompt(persona, memories=(_memory(last_accessed_at=accessed),))
+
+    assert "last_accessed: 2026-09-20" in prompt
+
+
+def test_last_accessed_is_omitted_when_never_accessed(persona: Persona) -> None:
+    prompt = build_system_prompt(persona, memories=(_memory(last_accessed_at=None),))
+
+    assert "last_accessed" not in prompt
+
+
+def test_memory_budget_drops_the_lowest_ranked_first(persona: Persona) -> None:
+    memories = (
+        _memory("m1", content="第一条" * 5),
+        _memory("m2", content="第二条" * 5),
+        _memory("m3", content="第三条" * 5),
+    )
+
+    prompt = build_system_prompt(persona, memories=memories, memory_max_chars=80)
+
+    assert "第一条" in prompt
+    assert "第三条" not in prompt
+
+
+def test_first_memory_survives_an_impossible_budget(persona: Persona) -> None:
+    """预算再小也要留第一条——否则等于白检索一场。"""
+    prompt = build_system_prompt(persona, memories=(_memory(),), memory_max_chars=1)
+
+    assert SECTION_RELEVANT_MEMORIES in prompt
+    assert "content: 用户喜欢深夜写代码" in prompt

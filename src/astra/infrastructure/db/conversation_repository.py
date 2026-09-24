@@ -12,11 +12,13 @@ import asyncio
 import json
 import sqlite3
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import datetime
 from pathlib import Path
 
 from astra.domain.conversation import Conversation, ConversationStatus, Message, Role
 from astra.infrastructure.db.connection import open_connection
+from astra.infrastructure.db.timestamps import from_iso as _from_iso
+from astra.infrastructure.db.timestamps import to_iso as _to_iso
 
 _CONVERSATION_COLUMNS = "id, user_id, companion_id, started_at, ended_at, summary, status"
 _MESSAGE_COLUMNS = "id, conversation_id, turn_id, role, content, metadata_json, created_at"
@@ -183,14 +185,3 @@ def _row_to_message(row: sqlite3.Row) -> Message:
         created_at=_from_iso(str(row["created_at"])),
         metadata=json.loads(raw_metadata) if raw_metadata else {},
     )
-
-
-def _to_iso(value: datetime) -> str:
-    if value.tzinfo is None:
-        msg = "datetime must be timezone-aware; naive timestamps would be ambiguous in the DB"
-        raise ValueError(msg)
-    return value.astimezone(UTC).isoformat()
-
-
-def _from_iso(value: str) -> datetime:
-    return datetime.fromisoformat(value)

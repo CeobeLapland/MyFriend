@@ -78,6 +78,10 @@ class TurnResponse(BaseModel):
     degraded: bool = False
     stubs_used: list[str] = Field(default_factory=list)
     timings: TimingsBody
+    #: M2：本轮注入 prompt 的记忆条数 / 新建的记忆条数。
+    #: 客户端与开发者控制台靠它判断"记忆子系统到底有没有在工作"。
+    memories_retrieved: int = 0
+    memories_created: int = 0
 
 
 class AcceptedBody(BaseModel):
@@ -125,6 +129,69 @@ class ConfigBody(BaseModel):
     emotions: list[str]
     actions: list[str]
     voice_styles: list[str]
+    #: M2：记忆的**当前**开关状态（运行时可变，不等于 Settings 的初值）。
+    memory_enabled: bool
+    #: M2：记忆类型词表，与 emotions/actions 同理属于协议契约。
+    memory_types: list[str]
+
+
+# ── Memory（M2）─────────────────────────────────────────
+
+
+class MemoryBody(BaseModel):
+    """一条记忆的对外表示。"""
+
+    id: str
+    user_id: str
+    companion_id: str
+    type: str
+    content: str
+    summary: str | None = None
+    importance: float
+    confidence: float
+    source_message_id: str | None = None
+    source_event_id: str | None = None
+    created_at: datetime
+    last_accessed_at: datetime | None = None
+    expires_at: datetime | None = None
+    archived_at: datetime | None = None
+    metadata: dict[str, Any]
+
+
+class MemoryListBody(BaseModel):
+    memories: list[MemoryBody]
+    total: int
+
+
+class MemoryUpdateBody(BaseModel):
+    """``PATCH /v1/memories/{id}`` 的请求体。只传要改的字段。
+
+    ``content`` 变了会**重新向量化并更新索引**——否则改完文字还是按旧向量被检索到。
+    """
+
+    content: str | None = Field(default=None, min_length=1)
+    summary: str | None = None
+    type: Literal["semantic", "episodic", "preference", "relationship", "event"] | None = None
+    importance: float | None = Field(default=None, ge=0.0, le=1.0)
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
+
+
+class MemoryClearBody(BaseModel):
+    removed: int
+
+
+class MemorySettingsBody(BaseModel):
+    """``GET`` / ``PUT /v1/memories/settings``。"""
+
+    enabled: bool
+
+
+class MemoryExportBody(BaseModel):
+    """``GET /v1/memories/export`` —— 备份用，**含已归档与已过期**。"""
+
+    exported_at: datetime
+    total: int
+    memories: list[MemoryBody]
 
 
 class ErrorBody(BaseModel):

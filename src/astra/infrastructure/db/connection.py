@@ -20,18 +20,27 @@
 
 from __future__ import annotations
 
+import logging
 import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+_logger = logging.getLogger(__name__)
+
 _BUSY_TIMEOUT_MS = 5000
 
 
-def connect(db_path: Path | str) -> sqlite3.Connection:
+def connect(db_path: Path | str, *, load_extensions: bool = False) -> sqlite3.Connection:
     """打开一个配置好的连接。调用方负责 ``close()``。
 
     父目录不存在时会自动创建（``data/`` 通常不在版本控制里）。
+
+    Args:
+        db_path: 库文件路径。
+        load_extensions: 为 ``True`` 时加载 sqlite-vec 扩展（M2 的向量索引需要）。
+            **默认关闭**——只有需要 vec0 表的连接才开，且加载后立刻
+            ``enable_load_extension(False)``，把「允许加载任意扩展」的窗口压到最小。
     """
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -44,17 +53,42 @@ def connect(db_path: Path | str) -> sqlite3.Connection:
     )
     conn.row_factory = sqlite3.Row
     _apply_pragmas(conn)
+
+    if load_extensions:
+        _load_vec_extension(conn)
+
     return conn
 
 
 @contextmanager
-def open_connection(db_path: Path | str) -> Iterator[sqlite3.Connection]:
+def open_connection(
+    db_path: Path | str, *, load_extensions: bool = False
+) -> Iterator[sqlite3.Connection]:
     """``connect()`` 的上下文管理器形式，保证连接被关闭。"""
-    conn = connect(db_path)
+    conn = connect(db_path, load_extensions=load_extensions)
     try:
         yield conn
     finally:
         conn.close()
+
+
+def _load_vec_extension(conn: sqlite3.Connection) -> None:
+    """加载 sqlite-vec。
+
+    只加载随项目依赖分发的那个扩展文件（``sqlite_vec.loadable_path()``），
+    绝不加载外部路径；加载完立即关闭扩展加载开关（ADR 0018）。
+
+    ``import`` 放在函数内：让 ``astra.infrastructure.db`` 的其他用途（会话仓储、
+    健康探针）不必依赖 sqlite-vec 的导入副作用。
+    """
+    import sqlite_vec
+
+    conn.enable_load_extension(True)
+    try:
+        sqlite_vec.load(conn)
+    finally:
+        conn.enable_load_extension(False)
+    _logger.debug("sqlite-vec extension loaded", extra={"event": "db.extension.loaded"})
 
 
 def _apply_pragmas(conn: sqlite3.Connection) -> None:

@@ -100,6 +100,11 @@ def test_dev_console_is_not_in_the_openapi_schema(dev_client: TestClient) -> Non
         "/v1/chat/turns",
         "/v1/chat/messages",
         "/v1/conversations/{conversation_id}/messages",
+        # M2 记忆面板用到的端点
+        "/v1/memories",
+        "/v1/memories/settings",
+        "/v1/memories/clear",
+        "/v1/memories/{memory_id}",
     ],
 )
 def test_console_backing_endpoints_exist(dev_client: TestClient, path: str) -> None:
@@ -107,6 +112,15 @@ def test_console_backing_endpoints_exist(dev_client: TestClient, path: str) -> N
     paths = dev_client.get("/openapi.json").json()["paths"]
 
     assert path in paths
+
+
+def test_dev_console_has_a_memory_panel(dev_client: TestClient) -> None:
+    """M2 起控制台要能看记忆——否则"记忆有没有在工作"只能靠查库验收。"""
+    body = dev_client.get("/dev").text
+
+    assert "memory-list" in body
+    assert "memory-enabled" in body
+    assert "/v1/memories" in body
 
 
 def test_websocket_route_is_mounted(dev_client: TestClient) -> None:

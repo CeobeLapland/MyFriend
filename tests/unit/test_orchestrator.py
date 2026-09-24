@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from astra.application.conversation_service import ConversationService
+from astra.application.memory_service import MemoryConfig, MemoryService
 from astra.application.orchestrator import (
     DEFAULT_ERROR_REPLIES,
     STUB_STAGES,
@@ -33,13 +34,24 @@ from astra.domain.errors import (
     LLMUnavailableError,
 )
 from astra.domain.llm import ReasoningEffort
+from astra.domain.memory import MemoryCandidate, MemoryType
 from astra.infrastructure.db.conversation_repository import SQLiteConversationRepository
+from astra.infrastructure.db.memory_repository import SQLiteMemoryStore
 from astra.infrastructure.db.migrations import upgrade
 from astra.infrastructure.persona.toml_loader import load_persona
-from tests.fakes import FakeLLMProvider, llm_response
+from tests.fakes import FakeEmbeddingProvider, FakeLLMProvider, assistant_json, llm_response
 
 _BASE = datetime(2026, 9, 24, 12, 0, tzinfo=UTC)
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+
+#: 记忆子系统测试用的维度与向量（必须与 vec0 的 float[768] 一致）
+_MEMORY_DIM = 768
+_MEMORY_TEXT = "用户喜欢深夜写代码"
+_MEMORY_QUERY = "我一般什么时候写代码效率最高"
+_MEMORY_VECTORS = {
+    _MEMORY_TEXT: (1.0, 0.0, *([0.0] * (_MEMORY_DIM - 2))),
+    _MEMORY_QUERY: (1.0, 0.05, *([0.0] * (_MEMORY_DIM - 2))),
+}
 
 _CONFIG = TurnConfig(
     user_id="local",
@@ -62,9 +74,14 @@ def persona():
 
 
 @pytest.fixture
-def conversations(tmp_path: Path) -> ConversationService:
-    db_path = tmp_path / "astra.db"
-    upgrade(db_path)
+def db_path(tmp_path: Path) -> Path:
+    path = tmp_path / "astra.db"
+    upgrade(path)
+    return path
+
+
+@pytest.fixture
+def conversations(db_path: Path) -> ConversationService:
     return ConversationService(
         SQLiteConversationRepository(db_path),
         user_id="local",
@@ -74,10 +91,22 @@ def conversations(tmp_path: Path) -> ConversationService:
     )
 
 
+@pytest.fixture
+def memory(db_path: Path) -> MemoryService:
+    return MemoryService(
+        SQLiteMemoryStore(db_path, embedding_model="fake-embedding", embedding_dim=_MEMORY_DIM),
+        FakeEmbeddingProvider(dim=_MEMORY_DIM, vectors=_MEMORY_VECTORS),
+        config=MemoryConfig(user_id="local", companion_id="astra"),
+        clock=lambda: _BASE,
+    )
+
+
 def _orchestrator(
     conversations: ConversationService,
     persona,
     provider: FakeLLMProvider | None,
+    *,
+    memory: object = None,
     **config_overrides: object,
 ) -> Orchestrator:
     return Orchestrator(
@@ -85,6 +114,7 @@ def _orchestrator(
         conversations=conversations,
         persona=persona,
         config=replace(_CONFIG, **config_overrides),  # type: ignore[arg-type]
+        memory=memory,  # type: ignore[arg-type]
         clock=lambda: _BASE,
     )
 
@@ -124,17 +154,27 @@ def test_successful_turn_persists_both_messages(
 
 
 def test_stub_ledger(conversations: ConversationService, persona) -> None:
-    """桩账本：M2/M3 实现任何一个空桩都会让这条断言变红，强制显式更新。"""
+    """桩账本：M2 已填掉 retrieve_memory / enqueue_memory_extraction，只剩 M3 的
+    ``apply_state_delta``。M3 实现它时这条断言会变红，强制显式更新。"""
     orchestrator = _orchestrator(conversations, persona, FakeLLMProvider([llm_response()]))
 
     result = _run(orchestrator.run_turn(TurnRequest(text="你好")))
 
     assert result.stubs_used == STUB_STAGES
-    assert result.stubs_used == {
-        "retrieve_memory",
-        "apply_state_delta",
-        "enqueue_memory_extraction",
-    }
+    assert result.stubs_used == {"apply_state_delta"}
+
+
+def test_turn_without_a_memory_service_still_works(
+    conversations: ConversationService, persona
+) -> None:
+    """记忆子系统缺席（``ASTRA_EMBEDDING_PROVIDER=none``）不该影响聊天。"""
+    orchestrator = _orchestrator(conversations, persona, FakeLLMProvider([llm_response()]))
+
+    result = _run(orchestrator.run_turn(TurnRequest(text="你好")))
+
+    assert result.succeeded is True
+    assert result.memories_retrieved == 0
+    assert result.memories_created == 0
 
 
 def test_second_turn_sees_history(conversations: ConversationService, persona) -> None:
@@ -405,3 +445,150 @@ def test_turns_in_same_conversation_are_serialized(
 
     # 三个 turn 共 6 条消息，必须严格 user/assistant 交替（没有交错）
     assert roles == ["user", "assistant"] * 3
+
+
+# ── 记忆集成（M2）───────────────────────────────────────
+
+
+def test_retrieved_memories_are_injected_into_the_prompt(
+    conversations: ConversationService, persona, memory: MemoryService
+) -> None:
+    """检索到的记忆必须出现在 system prompt 的 Layer 5——否则检索等于白做。"""
+    _run(
+        memory.ingest_candidates(
+            [MemoryCandidate(type=MemoryType.PREFERENCE, content=_MEMORY_TEXT)],
+            user_text=_MEMORY_TEXT,
+        )
+    )
+    provider = FakeLLMProvider([llm_response()])
+    orchestrator = _orchestrator(conversations, persona, provider, memory=memory)
+
+    result = _run(orchestrator.run_turn(TurnRequest(text=_MEMORY_QUERY)))
+
+    assert result.memories_retrieved == 1
+    sent_prompt = provider.requests[0].system_prompt
+    assert "RELEVANT MEMORIES" in sent_prompt
+    assert _MEMORY_TEXT in sent_prompt
+
+
+def test_unrelated_turn_gets_no_memory_layer(
+    conversations: ConversationService, persona, memory: MemoryService
+) -> None:
+    """没有命中记忆时整层省略——空标题会让模型以为系统藏着信息。"""
+    provider = FakeLLMProvider([llm_response()])
+    orchestrator = _orchestrator(conversations, persona, provider, memory=memory)
+
+    result = _run(orchestrator.run_turn(TurnRequest(text="今天天气怎么样")))
+
+    assert result.memories_retrieved == 0
+    assert "RELEVANT MEMORIES" not in provider.requests[0].system_prompt
+
+
+def test_candidates_are_stored_with_provenance(
+    conversations: ConversationService, persona, memory: MemoryService
+) -> None:
+    """候选必须带 ``source_message_id``——"这句话是从哪来的"是记忆的基本属性。"""
+    payload = assistant_json(memory_candidates=[{"type": "preference", "content": _MEMORY_TEXT}])
+    orchestrator = _orchestrator(
+        conversations, persona, FakeLLMProvider([llm_response(payload)]), memory=memory
+    )
+
+    result = _run(orchestrator.run_turn(TurnRequest(text=_MEMORY_TEXT)))
+
+    assert result.memories_created == 1
+    stored = _run(memory.list_memories())
+    assert len(stored) == 1
+    assert stored[0].content == _MEMORY_TEXT
+
+    history = _run(conversations.load_history(result.conversation_id))
+    user_message = history[0]
+    assert stored[0].source_message_id == user_message.id
+
+
+def test_turn_without_candidates_creates_nothing(
+    conversations: ConversationService, persona, memory: MemoryService
+) -> None:
+    """docs/05 §8：候选不是每轮都创建。空数组必须什么都不写。"""
+    orchestrator = _orchestrator(
+        conversations,
+        persona,
+        FakeLLMProvider([llm_response(assistant_json(memory_candidates=[]))]),
+        memory=memory,
+    )
+
+    result = _run(orchestrator.run_turn(TurnRequest(text="今天天气不错")))
+
+    assert result.memories_created == 0
+    assert _run(memory.list_memories()) == ()
+
+
+def test_no_store_phrase_prevents_writing(
+    conversations: ConversationService, persona, memory: MemoryService
+) -> None:
+    """docs/06 §9：用户说"不要记住"必须生效。"""
+    payload = assistant_json(memory_candidates=[{"type": "event", "content": "用户明天要去医院"}])
+    orchestrator = _orchestrator(
+        conversations, persona, FakeLLMProvider([llm_response(payload)]), memory=memory
+    )
+
+    result = _run(orchestrator.run_turn(TurnRequest(text="我明天要去医院，这件事不要记住")))
+
+    assert result.succeeded is True
+    assert result.memories_created == 0
+    assert _run(memory.list_memories()) == ()
+
+
+class _BrokenMemory:
+    """每个方法都炸的记忆替身——验证失败隔离。"""
+
+    async def retrieve(self, query: str) -> object:
+        raise RuntimeError("retrieve exploded")
+
+    async def ingest_candidates(self, candidates: object, **kwargs: object) -> object:
+        raise RuntimeError("ingest exploded")
+
+
+def test_memory_failure_does_not_break_the_turn(
+    conversations: ConversationService, persona
+) -> None:
+    """记忆子系统抛异常时 turn 仍必须成功——LLM 已经回复了，用户必须拿到。"""
+    payload = assistant_json(memory_candidates=[{"type": "preference", "content": _MEMORY_TEXT}])
+    orchestrator = _orchestrator(
+        conversations, persona, FakeLLMProvider([llm_response(payload)]), memory=_BrokenMemory()
+    )
+
+    result = _run(orchestrator.run_turn(TurnRequest(text="你好")))
+
+    assert result.succeeded is True
+    assert result.response is not None
+    assert result.response.reply
+    assert result.memories_retrieved == 0
+    assert result.memories_created == 0
+    # 消息照常落库
+    history = _run(conversations.load_history(result.conversation_id))
+    assert [message.role for message in history] == [Role.USER, Role.ASSISTANT]
+
+
+def test_disabled_memory_neither_retrieves_nor_writes(
+    conversations: ConversationService, persona, memory: MemoryService
+) -> None:
+    """docs/06 §9 的"禁用记忆"必须同时关掉读取与写入。"""
+    _run(
+        memory.ingest_candidates(
+            [MemoryCandidate(type=MemoryType.PREFERENCE, content=_MEMORY_TEXT)],
+            user_text=_MEMORY_TEXT,
+        )
+    )
+    _run(memory.set_enabled(False))
+
+    payload = assistant_json(memory_candidates=[{"type": "preference", "content": "用户新的事实"}])
+    provider = FakeLLMProvider([llm_response(payload)])
+    orchestrator = _orchestrator(conversations, persona, provider, memory=memory)
+
+    result = _run(orchestrator.run_turn(TurnRequest(text=_MEMORY_QUERY)))
+
+    assert result.memories_retrieved == 0
+    assert result.memories_created == 0
+    assert "RELEVANT MEMORIES" not in provider.requests[0].system_prompt
+    # 禁用期间没有写入新记忆，只有禁用前那一条
+    assert len(_run(memory.list_memories())) == 1

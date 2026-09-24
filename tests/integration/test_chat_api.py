@@ -76,11 +76,7 @@ def test_turn_returns_structured_response(client: TestClient) -> None:
     assert body["turn_id"]
     assert body["conversation_id"]
     assert body["failure"] is None
-    assert body["stubs_used"] == [
-        "apply_state_delta",
-        "enqueue_memory_extraction",
-        "retrieve_memory",
-    ]
+    assert body["stubs_used"] == ["apply_state_delta"]
     assert body["timings"]["total_ms"] >= 0
 
 

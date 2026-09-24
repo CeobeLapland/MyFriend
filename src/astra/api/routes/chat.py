@@ -130,4 +130,6 @@ def _to_response(result: TurnResult) -> TurnResponse:
             total_ms=result.timings.total_ms,
             llm_ms=result.timings.llm_ms,
         ),
+        memories_retrieved=result.memories_retrieved,
+        memories_created=result.memories_created,
     )

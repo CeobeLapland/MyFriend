@@ -9,6 +9,7 @@ dependencies = [
     "httpx>=0.28.1",
     "pydantic>=2.13.5",
     "pydantic-settings>=2.15.0",
+    "sqlite-vec>=0.1.9",
     "uvicorn>=0.53.0",
     "websockets>=17.1",
 ]
@@ -93,6 +94,13 @@ show_error_codes = true
 init_forbid_extra = true
 init_typed = true
 warn_required_dynamic_aliases = true
+
+# sqlite-vec 没有分发 py.typed（M2 的向量索引依赖）。它是 C 扩展的薄 Python 包装，
+# 自己写 stub 只会复述 `load()` / `serialize_float32()` / `loadable_path()` 三个签名。
+# 只在基础设施层用到，用 override 比维护一份 stub 更划算。
+[[tool.mypy.overrides]]
+module = ["sqlite_vec"]
+ignore_missing_imports = true
 
 # ── pytest ──────────────────────────────────────────────
 [tool.pytest.ini_options]

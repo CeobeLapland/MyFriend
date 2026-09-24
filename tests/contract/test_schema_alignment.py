@@ -3,13 +3,14 @@
 ADR 0007 要求 M1 建立这个机制。**不用 ``jsonschema``**——为一个测试加依赖不值，
 结构化比对已经足够。
 
-比对三件事：
+比对四件事：
 
-1. 代码模型发送的 profile 是文档契约的**子集**（M1 只发 4 字段，ADR 0011）
-2. 嵌套对象的字段名集合与文档一致
+1. 代码模型发送的 profile 是文档契约的**子集**（M2 发 5 字段，ADR 0011 / 0018）
+2. 嵌套对象的字段名集合与文档一致；``memory_candidates`` 是**刻意的精简子集**
 3. **数值范围**：JSON Schema 里写了 ``minimum``/``maximum``，但实测 ``strict: true``
    并不强制它们，所以真正的强制点在 ``domain/response.py``。这里直接断言
    「文档写的范围 == 领域常量」，把文档契约仍然验证到位。
+4. ``docs/schemas`` 保留 7 字段的**完整**定义，不因当前 profile 裁剪而缩水
 """
 
 from __future__ import annotations
@@ -21,20 +22,21 @@ from typing import Any
 import pytest
 
 from astra.application.assistant_schema import (
+    LIST_PAYLOAD_MODELS,
     NESTED_PAYLOAD_MODELS,
     AssistantResponsePayload,
+    MemoryCandidatePayload,
 )
 from astra.domain.response import INTENSITY_RANGE, PITCH_RANGE, SPEED_RANGE
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DOCS_SCHEMA_PATH = _REPO_ROOT / "docs" / "schemas" / "assistant_response.schema.json"
 
-#: M1 实际发送的字段（ADR 0011）
-M1_FIELDS = frozenset({"reply", "emotion", "action", "voice"})
+#: M2 实际发送的字段（ADR 0011 / 0018）
+PROFILE_FIELDS = frozenset({"reply", "emotion", "action", "voice", "memory_candidates"})
 
-#: 文档里定义了但 M1 不发送的字段，按里程碑标注
+#: 文档里定义了但当前里程碑仍不发送的字段，按里程碑标注
 DEFERRED_FIELDS = {
-    "memory_candidates": "M2",
     "state_delta": "M3",
     "tool_calls": "M6",
 }
@@ -55,20 +57,20 @@ def test_docs_schema_exists_and_is_valid_json() -> None:
 
 
 def test_docs_schema_still_defines_the_full_contract() -> None:
-    """文档保留 7 字段的完整定义——它是对外契约描述，不应因 M1 裁剪而缩水。"""
+    """文档保留 7 字段的完整定义——它是对外契约描述，不应因 profile 裁剪而缩水。"""
     properties = set(_docs_schema()["properties"])
 
-    assert M1_FIELDS | set(DEFERRED_FIELDS) == properties
+    assert PROFILE_FIELDS | set(DEFERRED_FIELDS) == properties
 
 
 # ── 代码 profile ↔ 文档契约 ─────────────────────────────
 
 
-def test_m1_profile_is_exactly_the_four_declared_fields() -> None:
-    assert set(AssistantResponsePayload.model_fields) == M1_FIELDS
+def test_profile_is_exactly_the_declared_fields() -> None:
+    assert set(AssistantResponsePayload.model_fields) == PROFILE_FIELDS
 
 
-def test_m1_profile_is_a_subset_of_documented_contract() -> None:
+def test_profile_is_a_subset_of_documented_contract() -> None:
     code = AssistantResponsePayload.model_json_schema()
     docs = _docs_schema()
 
@@ -77,7 +79,7 @@ def test_m1_profile_is_a_subset_of_documented_contract() -> None:
 
 
 @pytest.mark.parametrize("field", sorted(DEFERRED_FIELDS))
-def test_deferred_fields_are_not_sent_in_m1(field: str) -> None:
+def test_deferred_fields_are_not_sent_yet(field: str) -> None:
     code = AssistantResponsePayload.model_json_schema()
 
     assert field not in code["properties"]
@@ -97,6 +99,35 @@ def test_nested_objects_are_closed_in_both_definitions() -> None:
     for name in NESTED_PAYLOAD_MODELS:
         assert docs[name]["additionalProperties"] is False
         assert code["$defs"][f"{name.capitalize()}Payload"]["additionalProperties"] is False
+
+
+# ── memory_candidates：刻意的精简子集（ADR 0018）─────────
+
+
+def test_memory_candidates_is_registered_as_a_list_payload() -> None:
+    """数组形状必须单独登记，否则数组里的多余键会绕过剪枝。"""
+    assert LIST_PAYLOAD_MODELS["memory_candidates"] is MemoryCandidatePayload
+    assert "memory_candidates" not in NESTED_PAYLOAD_MODELS
+
+
+def test_memory_candidate_payload_is_the_minimal_two_field_shape() -> None:
+    """实测决定：让模型自评 importance/confidence 每轮多付约 2.1s，且会给越界值。"""
+    assert set(MemoryCandidatePayload.model_fields) == {"type", "content"}
+
+
+def test_memory_candidate_shape_is_a_subset_of_the_documented_one() -> None:
+    """文档里的候选有 5 个字段，我们只发其中 2 个——**子集**，不是不一致。"""
+    docs_candidate = _docs_schema()["properties"]["memory_candidates"]["items"]
+
+    assert set(MemoryCandidatePayload.model_fields) < set(docs_candidate["properties"])
+    assert docs_candidate["additionalProperties"] is False
+
+
+def test_documented_candidate_still_carries_the_scoring_fields() -> None:
+    """打分字段仍在文档契约里——它们由代码算，不由模型给。"""
+    docs_candidate = _docs_schema()["properties"]["memory_candidates"]["items"]
+
+    assert {"importance", "confidence", "expires_in_days"} <= set(docs_candidate["properties"])
 
 
 # ── 数值范围：文档 ↔ 领域常量 ───────────────────────────

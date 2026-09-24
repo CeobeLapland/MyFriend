@@ -21,9 +21,22 @@ from astra.infrastructure.db.migrations import (
     upgrade,
 )
 
-_EXPECTED_TABLES = {"conversations", "memories", "messages", "schema_migrations"}
+#: 迁移必须建出的表。**不**用等号断言：0003 的 vec0 虚拟表会连带创建
+#: ``memory_vectors_info`` / ``_chunks`` / ``_rowids`` / ``_vector_chunks00``
+#: 等影子表，那些是 sqlite-vec 的实现细节，不该被本测试锁死。
+_REQUIRED_TABLES = {
+    "app_flags",
+    "conversations",
+    "memories",
+    "memory_embeddings",
+    "memory_vectors",
+    "messages",
+    "schema_migrations",
+}
 _EXPECTED_INDEXES = {
+    "idx_memories_archived",
     "idx_memories_companion_type",
+    "idx_memories_expires",
     "idx_memories_importance",
     "idx_messages_conversation_created",
     "idx_messages_turn_role",
@@ -62,7 +75,7 @@ def _write_migration(directory: Path, filename: str, sql: str) -> Path:
 def test_empty_db_initializes_from_scratch(db_path: Path) -> None:
     assert upgrade(db_path) == _shipped_versions()
 
-    assert _names(db_path, "table") == _EXPECTED_TABLES
+    assert _names(db_path, "table") >= _REQUIRED_TABLES
     assert _names(db_path, "index") >= _EXPECTED_INDEXES
 
 
@@ -70,7 +83,7 @@ def test_upgrade_is_idempotent(db_path: Path) -> None:
     upgrade(db_path)
 
     assert upgrade(db_path) == []
-    assert _names(db_path, "table") == _EXPECTED_TABLES
+    assert _names(db_path, "table") >= _REQUIRED_TABLES
 
 
 def test_upgrade_creates_missing_parent_directory(tmp_path: Path) -> None:
@@ -106,7 +119,7 @@ def test_state_survives_reconnect(db_path: Path) -> None:
     """模拟进程重启：新连接必须看到已建好的表，且不会重复应用迁移。"""
     upgrade(db_path)
 
-    assert _names(db_path, "table") == _EXPECTED_TABLES
+    assert _names(db_path, "table") >= _REQUIRED_TABLES
     assert upgrade(db_path) == []
 
 
@@ -121,6 +134,54 @@ def test_shipped_migrations_are_valid() -> None:
     versions = [m.version for m in migrations]
     assert versions == sorted(versions), "版本号必须升序"
     assert len(set(versions)) == len(versions), "版本号不能重复"
+
+
+# ── sqlite-vec 扩展（0003）───────────────────────────────
+
+
+def test_vec_extension_is_loaded_by_upgrade(db_path: Path) -> None:
+    """0003 建的 vec0 表必须可用：写入 → KNN 命中 → 删除 → 不再命中。
+
+    这条同时验证 `upgrade()` 确实加载了扩展——否则 vec0 的 DDL 根本执行不了。
+    """
+    import sqlite_vec
+
+    upgrade(db_path)
+
+    unit_x = sqlite_vec.serialize_float32([1.0, 0.0] + [0.0] * 766)
+    unit_y = sqlite_vec.serialize_float32([0.0, 1.0] + [0.0] * 766)
+
+    with open_connection(db_path, load_extensions=True) as conn:
+        assert str(conn.execute("SELECT vec_version()").fetchone()[0]).startswith("v")
+
+        conn.execute(
+            "INSERT INTO memory_vectors (memory_id, embedding) VALUES (?, ?)", ("m1", unit_x)
+        )
+        conn.execute(
+            "INSERT INTO memory_vectors (memory_id, embedding) VALUES (?, ?)", ("m2", unit_y)
+        )
+
+        rows = conn.execute(
+            "SELECT memory_id, distance FROM memory_vectors WHERE embedding MATCH ? AND k = 2 "
+            "ORDER BY distance",
+            (unit_x,),
+        ).fetchall()
+
+        assert [row["memory_id"] for row in rows] == ["m1", "m2"]
+        # 余弦距离：正交 = 1.0（L2 会是 √2 ≈ 1.414）。这条锁住 distance_metric=cosine。
+        assert rows[0]["distance"] == pytest.approx(0.0)
+        assert rows[1]["distance"] == pytest.approx(1.0)
+
+        conn.execute("DELETE FROM memory_vectors WHERE memory_id = ?", ("m1",))
+        assert conn.execute("SELECT count(*) FROM memory_vectors").fetchone()[0] == 1
+
+
+def test_vec_extension_is_off_by_default(db_path: Path) -> None:
+    """默认连接不开扩展加载窗口——`enable_load_extension` 是有安全含义的开关。"""
+    upgrade(db_path)
+
+    with open_connection(db_path) as conn, pytest.raises(sqlite3.OperationalError):
+        conn.execute("SELECT vec_version()")
 
 
 # ── 校验与失败路径 ──────────────────────────────────────

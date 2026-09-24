@@ -13,8 +13,10 @@ import pytest
 from pydantic import BaseModel
 
 from astra.application.assistant_schema import (
+    LIST_PAYLOAD_MODELS,
     NESTED_PAYLOAD_MODELS,
     AssistantResponsePayload,
+    MemoryCandidatePayload,
     build_response_format,
 )
 from astra.application.response_parser import (
@@ -23,6 +25,7 @@ from astra.application.response_parser import (
     prune_unknown_keys,
 )
 from astra.domain.errors import LLMResponseError
+from astra.domain.memory import MemoryType
 from astra.domain.response import INTENSITY_RANGE, PITCH_RANGE, SPEED_RANGE
 from astra.domain.vocabulary import DEFAULT_ACTION, DEFAULT_EMOTION, DEFAULT_VOICE_STYLE
 
@@ -185,13 +188,140 @@ def test_extra_nested_key_is_dropped() -> None:
     assert outcome.response.emotion.primary == "happy"
 
 
-def test_tool_calls_and_memory_candidates_are_dropped() -> None:
-    """M1 的 profile 不含这些字段，出现即丢弃（M2/M6 才会消费）。"""
+def test_tool_calls_is_dropped() -> None:
+    """``tool_calls`` 要等到 M6 才有消费者，出现即丢弃（与 M1 的 memory_candidates 同理）。"""
+    outcome = parse_assistant_response(_raw(tool_calls=[{"name": "get_time", "arguments": {}}]))
+
+    assert outcome.dropped_keys == ("tool_calls",)
+    assert outcome.response.memory_candidates == ()
+
+
+# ── 段 2b：memory_candidates（M2 起有消费者）─────────────
+
+
+def test_memory_candidates_are_parsed() -> None:
     outcome = parse_assistant_response(
-        _raw(tool_calls=[{"name": "get_time", "arguments": {}}], memory_candidates=[{"type": "x"}])
+        _raw(
+            memory_candidates=[
+                {"type": "preference", "content": "用户喜欢深夜写代码"},
+                {"type": "event", "content": "用户完成了 M1"},
+            ]
+        )
     )
 
-    assert set(outcome.dropped_keys) == {"tool_calls", "memory_candidates"}
+    assert [candidate.type for candidate in outcome.response.memory_candidates] == [
+        MemoryType.PREFERENCE,
+        MemoryType.EVENT,
+    ]
+    assert outcome.response.memory_candidates[0].content == "用户喜欢深夜写代码"
+    assert outcome.degraded is False
+
+
+def test_unknown_key_inside_a_candidate_is_pruned_not_fatal() -> None:
+    """**数组剪枝的回归测试**（本轮最容易漏的一处）。
+
+    M1 的 profile 没有数组字段，所以「只按 dict 剪枝」的写法一直没暴露。
+    不修的话，候选里的 ``importance`` 会原样留下 → ``extra="forbid"`` 校验失败
+    → 被判成**可重试**失败，等于每轮白跑一次 LLM。
+    """
+    outcome = parse_assistant_response(
+        _raw(
+            memory_candidates=[
+                {"type": "preference", "content": "用户喜欢深夜写代码", "importance": 10}
+            ]
+        )
+    )
+
+    assert outcome.dropped_keys == ("memory_candidates.importance",)
+    assert outcome.response.memory_candidates[0].content == "用户喜欢深夜写代码"
+
+
+def test_candidate_content_is_stripped() -> None:
+    outcome = parse_assistant_response(
+        _raw(memory_candidates=[{"type": "semantic", "content": "  用户在做项目  "}])
+    )
+
+    assert outcome.response.memory_candidates[0].content == "用户在做项目"
+
+
+def test_empty_candidate_content_is_dropped() -> None:
+    outcome = parse_assistant_response(
+        _raw(
+            memory_candidates=[
+                {"type": "semantic", "content": "   "},
+                {"type": "semantic", "content": "有内容"},
+            ]
+        )
+    )
+
+    assert [candidate.content for candidate in outcome.response.memory_candidates] == ["有内容"]
+    assert any("empty content" in item for item in outcome.adjustments)
+
+
+def test_duplicate_candidate_content_is_dropped() -> None:
+    outcome = parse_assistant_response(
+        _raw(
+            memory_candidates=[
+                {"type": "semantic", "content": "用户在做项目"},
+                {"type": "event", "content": "用户在做项目"},
+            ]
+        )
+    )
+
+    assert len(outcome.response.memory_candidates) == 1
+    assert any("duplicate content" in item for item in outcome.adjustments)
+
+
+def test_unknown_candidate_type_falls_back_to_default() -> None:
+    """``goal`` 来自 docs/schemas 的示例，不在 docs/03 的规格里 → 降级为 semantic。"""
+    outcome = parse_assistant_response(
+        _raw(memory_candidates=[{"type": "goal", "content": "用户在做项目"}])
+    )
+
+    assert outcome.response.memory_candidates[0].type is MemoryType.SEMANTIC
+    assert any("memory_candidates.type" in item for item in outcome.adjustments)
+
+
+def test_candidate_type_is_case_insensitive() -> None:
+    outcome = parse_assistant_response(
+        _raw(memory_candidates=[{"type": "  Preference ", "content": "用户喜欢深夜写代码"}])
+    )
+
+    assert outcome.response.memory_candidates[0].type is MemoryType.PREFERENCE
+
+
+def test_missing_memory_candidates_is_not_degraded() -> None:
+    """缺失 → 补空列表，**不算降级**（docs/04 §5 允许可选信息缺席）。"""
+    outcome = parse_assistant_response(_raw())
+
+    assert outcome.response.memory_candidates == ()
+    assert outcome.degraded is False
+
+
+def test_empty_memory_candidates_is_not_degraded() -> None:
+    outcome = parse_assistant_response(_raw(memory_candidates=[]))
+
+    assert outcome.response.memory_candidates == ()
+    assert outcome.degraded is False
+
+
+def test_malformed_memory_candidates_is_replaced_and_degrades() -> None:
+    """类型不对（不是数组）→ 整段替换成空列表，**算降级**并记入 adjustments。"""
+    outcome = parse_assistant_response(_raw(memory_candidates="记住这个"))
+
+    assert outcome.response.memory_candidates == ()
+    assert "memory_candidates: malformed section replaced" in outcome.adjustments
+
+
+def test_non_object_candidate_fails_validation() -> None:
+    """数组元素不是对象时无法归一化——这是**可重试**失败，不是静默丢弃。"""
+    with pytest.raises(LLMResponseError):
+        parse_assistant_response(_raw(memory_candidates=["记住这个"]))
+
+
+def test_candidate_missing_content_fails_validation() -> None:
+    with pytest.raises(LLMResponseError):
+        parse_assistant_response(_raw(memory_candidates=[{"type": "semantic"}]))
 
 
 # ── 段 3：缺失字段补默认 ────────────────────────────────
@@ -285,6 +415,31 @@ def test_pruning_table_stays_in_sync_with_models() -> None:
     }
 
     assert nested == set(NESTED_PAYLOAD_MODELS)
+
+
+def test_list_pruning_table_stays_in_sync_with_models() -> None:
+    """对象数组的剪枝表同样要同步——数组走的是另一条分支（见 §段 2b）。"""
+    assert set(LIST_PAYLOAD_MODELS) == {"memory_candidates"}
+    assert LIST_PAYLOAD_MODELS["memory_candidates"] is MemoryCandidatePayload
+    # 数组字段本身必须真的在 payload 里，否则这张表就是死配置
+    assert "memory_candidates" in AssistantResponsePayload.model_fields
+
+
+def test_built_response_format_carries_the_m2_profile() -> None:
+    schema = build_response_format().schema
+
+    assert set(schema["properties"]) == {
+        "reply",
+        "emotion",
+        "action",
+        "voice",
+        "memory_candidates",
+    }
+    assert set(schema["required"]) == set(schema["properties"])
+    # strict 模式硬要求：每个对象都要 additionalProperties: false
+    candidate = schema["$defs"]["MemoryCandidatePayload"]
+    assert candidate["additionalProperties"] is False
+    assert set(candidate["required"]) == {"type", "content"}
 
 
 def test_prune_keeps_known_keys_untouched() -> None:

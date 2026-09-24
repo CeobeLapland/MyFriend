@@ -1,4 +1,4 @@
-"""把人格 + 历史组装成一次 LLM 调用的上下文。
+"""把人格 + 记忆 + 历史组装成一次 LLM 调用的上下文。
 
 **不在这里拼模型参数**（temperature / max_tokens / reasoning_effort）——那些来自
 ``Settings``，由 Orchestrator 填进 ``LLMRequest``。本模块只负责"说什么"。
@@ -11,6 +11,7 @@ from dataclasses import dataclass
 
 from astra.domain.conversation import Message, Role
 from astra.domain.llm import LLMMessage
+from astra.domain.memory import Memory
 from astra.domain.persona import Persona
 from astra.domain.prompt import build_system_prompt
 
@@ -25,6 +26,8 @@ class PromptBudget:
 
     max_history_messages: int
     max_history_chars: int
+    #: 记忆层（Layer 5）的字符预算。0 表示不注入记忆。
+    memory_max_chars: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -71,10 +74,14 @@ def build_conversation_context(
     history: Sequence[Message],
     user_text: str,
     budget: PromptBudget,
+    memories: Sequence[Memory] = (),
 ) -> ConversationContext:
     """组装 system prompt 与消息列表。
 
     当前用户消息**在裁剪之后**追加，因此永远不会被裁掉。
+
+    ``memories`` 由 ``MemoryService`` 检索并按总分排好序——这里不重排，否则
+    "同一组输入产出逐字节相同的 prompt" 这条（`docs/10` §2）会依赖两份排序逻辑。
     """
     window = trim_history(
         [message for message in history if message.role in _CONVERSATION_ROLES],
@@ -87,7 +94,11 @@ def build_conversation_context(
     messages.append(LLMMessage(role=Role.USER, content=user_text))
 
     return ConversationContext(
-        system_prompt=build_system_prompt(persona),
+        system_prompt=build_system_prompt(
+            persona,
+            memories=memories,
+            memory_max_chars=budget.memory_max_chars or None,
+        ),
         messages=tuple(messages),
         history_window=window,
     )

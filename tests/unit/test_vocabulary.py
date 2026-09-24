@@ -14,6 +14,7 @@ from astra.domain.errors import (
     LLMTimeoutError,
     LLMUnavailableError,
 )
+from astra.domain.memory import MemoryType
 
 # ── 白名单自身的一致性 ──────────────────────────────────
 
@@ -116,6 +117,46 @@ def test_normalization_does_not_leak_cross_category_values() -> None:
     """情绪名不应被当作动作名接受（反之亦然）。"""
     assert vocab.normalize_action("happy") == vocab.DEFAULT_ACTION
     assert vocab.normalize_emotion("nod") == vocab.DEFAULT_EMOTION
+
+
+# ── 记忆类型（M2）───────────────────────────────────────
+
+
+def test_memory_type_choices_are_derived_from_the_enum() -> None:
+    """词表必须从 ``MemoryType`` 派生——两份手抄的清单必然漂移。"""
+    derived = tuple(sorted(member.value for member in MemoryType))
+    assert derived == vocab.MEMORY_TYPE_CHOICES
+    assert vocab.MEMORY_TYPE_CHOICES == (
+        "episodic",
+        "event",
+        "preference",
+        "relationship",
+        "semantic",
+    )
+
+
+@pytest.mark.parametrize("value", sorted(member.value for member in MemoryType))
+def test_known_memory_type_passes_through(value: str) -> None:
+    assert vocab.normalize_memory_type(value) is MemoryType(value)
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [("  Preference ", MemoryType.PREFERENCE), ("EPISODIC", MemoryType.EPISODIC)],
+)
+def test_memory_type_normalization_is_case_and_whitespace_insensitive(
+    raw: str, expected: MemoryType
+) -> None:
+    assert vocab.normalize_memory_type(raw) is expected
+
+
+@pytest.mark.parametrize("raw", ["goal", "fact", "长期目标", "", "semantic-ish"])
+def test_unknown_memory_type_falls_back_to_default(raw: str) -> None:
+    """``goal`` / ``fact`` 来自 docs/schemas 的示例，**不在** docs/03 的规格里。
+
+    类型不认识不代表内容没价值，所以降级而不是丢弃候选（docs/05 §8）。
+    """
+    assert vocab.normalize_memory_type(raw) is MemoryType.SEMANTIC
 
 
 # ── 错误码 ──────────────────────────────────────────────

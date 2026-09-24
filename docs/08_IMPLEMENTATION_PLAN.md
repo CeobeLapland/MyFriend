@@ -64,6 +64,23 @@ text in
 4. 新会话中能在相关语境检索出来。
 5. 删除后不再检索到。
 
+### 实际落点（M2 已完成，见 ADR 0018 / 0019）
+
+- **候选提取是内联的**：主 schema 加回 `memory_candidates`，但每条只带
+  `{type, content}`。实测 +2.4s（完整字段形态 +4.5s，且模型给的分数会越界）。
+  `importance` / `confidence` 由 `application/memory_scoring.py` 按 `docs/06` §3
+  的加权和算。
+- **不做后台提取**：后台提取会把回复延迟压回去，但"说完立刻关程序"会丢记忆，
+  直接违反验收第 2–4 步。内联换的是持久性。
+- **检索排序用 `docs/06` §4 的加权公式**，五个权重在 `Settings` 里（文档要求）；
+  去重阈值、TTL、top_k 同样是配置或模块常量，不散落硬编码。
+- **向量索引**：sqlite-vec 0.1.9 的 vec0 表（`distance_metric=cosine`），
+  `memory_embeddings.vector_blob` 是向量的事实来源（`docs/03` §1）。
+- **no-store 是短语匹配**，边界写进 README 的"已知限制"。
+- **未做**：`docs/06` §7 的每日 consolidation（episodes→summary→merge→promote→
+  archive）。TTL 过期与归档已实现，consolidation 留待后续里程碑。
+- 开发者控制台新增记忆面板（列表 / 删除 / 清空 / 启用开关）。
+
 ## 4. 阶段 3：State
 
 实现：

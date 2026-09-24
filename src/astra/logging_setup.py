@@ -86,16 +86,20 @@ _RESERVED: frozenset[str] = frozenset(
 )
 
 #: 允许出现在日志中的 extra 字段。新增日志字段时需要同步加到这里。
+#: 注意：**记忆正文不属于这里**——它和用户内容同级，只记 id / 类型 / 条数。
 EXTRA_ALLOWLIST: frozenset[str] = frozenset(
     {
         "component",
         "conversation_id",
         "correlation_id",
+        "count",
         "detail",
         "dropped",
         "duration_ms",
         "event",
         "latency_ms",
+        "memory_id",
+        "memory_type",
         "method",
         "model",
         "path",
