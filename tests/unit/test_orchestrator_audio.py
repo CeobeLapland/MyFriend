@@ -21,7 +21,7 @@ from astra.application.conversation_service import ConversationService
 from astra.application.event_bus import EventBus, Subscription
 from astra.application.orchestrator import Orchestrator, TurnConfig, TurnRequest
 from astra.application.prompt_builder import PromptBudget
-from astra.domain.errors import TTSUnavailableError
+from astra.domain.errors import LLMUnavailableError, TTSUnavailableError
 from astra.domain.events import BinaryFrame, EventEnvelope, EventType
 from astra.domain.llm import ReasoningEffort
 from astra.infrastructure.db.conversation_repository import SQLiteConversationRepository
@@ -245,6 +245,28 @@ def test_tts_failure_does_not_fail_the_turn(conversations: ConversationService, 
     assert completed.payload["status"] == "failed"
     assert completed.payload["code"] == "tts_unavailable"
     assert "turn.completed" in types
+
+
+def test_llm_failure_does_not_emit_tts_events(conversations: ConversationService, persona) -> None:
+    """LLM 挂了只写诚实回复，**不发任何 tts 事件**。
+
+    TTS 只挂在成功路径上（``_persist_failure`` 在 ``_synthesize_speech`` 之前就返回了）。
+    所以"开了语音模式却只看到文字、听不到声音"从来不是 TTS 的问题——
+    它说明 LLM 那一环失败了。诊断时先看 ``/health`` 的 ``llm``，别去查 TTS。
+    """
+    bus = EventBus()
+    subscription = bus.subscribe()
+    tts = FakeTTSProvider()
+    provider = FakeLLMProvider([LLMUnavailableError("backend down")])
+    orchestrator = _orchestrator(conversations, persona, tts=tts, bus=bus, provider=provider)
+
+    result = asyncio.run(orchestrator.run_turn(TurnRequest(text="你好", synthesize_audio=True)))
+    frames = asyncio.run(_drain(subscription))
+
+    assert result.succeeded is False
+    assert tts.call_count == 0
+    assert "tts.started" not in _event_types(frames)
+    assert not any(isinstance(frame, BinaryFrame) for frame in frames)
 
 
 # ── 打断 ────────────────────────────────────────────────

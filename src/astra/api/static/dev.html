@@ -127,6 +127,7 @@
 <main>
   <section class="pane">
     <h2>对话<span class="spacer"></span>
+      <button type="button" id="new-conversation">新会话</button>
       <button type="button" id="load-history">拉取历史</button>
     </h2>
     <div class="scroll" id="chat"></div>
@@ -822,6 +823,20 @@ async function sendSync(text) {
   loadMemories().catch(() => {});
 }
 
+/* ── 新会话 ─────────────────────────────────────────── */
+
+async function startNewConversation() {
+  const response = await fetch("/v1/conversations", { method: "POST" });
+  if (!response.ok) throw new Error("开新会话失败：HTTP " + response.status);
+  const body = await response.json();
+
+  state.conversationId = body.conversation_id;
+  el("chat").replaceChildren();
+  addMessage("system", "已开一段新会话（旧会话被置为 ended，历史与记忆都还在）。",
+             "conversation=" + body.conversation_id);
+  stopPlayback();
+}
+
 /* ── 历史 ───────────────────────────────────────────── */
 
 async function loadHistory() {
@@ -875,6 +890,10 @@ el("composer").addEventListener("submit", async (event) => {
 
   addMessage("user", text);
   sendOverSocket(text);
+});
+
+el("new-conversation").addEventListener("click", () => {
+  startNewConversation().catch((error) => addMessage("failed", String(error), ""));
 });
 
 el("load-history").addEventListener("click", () => {

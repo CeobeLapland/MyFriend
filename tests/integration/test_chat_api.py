@@ -186,6 +186,44 @@ def test_config_reports_the_configured_audio_providers(db_path: Path) -> None:
     }
 
 
+# ── 开新会话 ────────────────────────────────────────────
+
+
+def test_new_conversation_starts_a_fresh_one(db_path: Path) -> None:
+    """M4 追加的端点：没有它，被写坏的历史只能靠 60 分钟空闲超时脱身。"""
+    with TestClient(
+        create_app(_settings(db_path), llm=FakeLLMProvider([llm_response() for _ in range(4)]))
+    ) as client:
+        first = _post_turn(client, "第一句")["conversation_id"]
+
+        response = client.post("/v1/conversations")
+
+        assert response.status_code == 201
+        body = response.json()
+        assert body["conversation_id"] != first
+        assert body["started_at"]
+
+        # 之后不带 conversation_id 的 turn 落在新会话里
+        assert _post_turn(client, "第二句")["conversation_id"] == body["conversation_id"]
+
+
+def test_new_conversation_keeps_the_old_history_readable(db_path: Path) -> None:
+    """**不删数据**——旧会话只是 ended，`GET .../messages` 照常读得到。"""
+    with TestClient(
+        create_app(_settings(db_path), llm=FakeLLMProvider([llm_response() for _ in range(2)]))
+    ) as client:
+        first = _post_turn(client, "第一句")["conversation_id"]
+
+        client.post("/v1/conversations")
+        history = client.get(f"/v1/conversations/{first}/messages")
+
+        assert history.status_code == 200
+        assert [message["content"] for message in history.json()["messages"]] == [
+            "第一句",
+            "你好呀，今天过得怎么样？",
+        ]
+
+
 # ── 降级 ────────────────────────────────────────────────
 
 

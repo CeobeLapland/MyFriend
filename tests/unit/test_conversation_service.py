@@ -273,3 +273,68 @@ def test_load_history_is_empty_for_new_conversation(service: ConversationService
     created = _run(service.resolve_or_create(None))
 
     assert _run(service.load_history(created.conversation.id)) == ()
+
+
+# ── 开新会话（M4）──────────────────────────────────────
+
+
+def test_start_new_ends_the_active_conversation(
+    service: ConversationService, repository: SQLiteConversationRepository
+) -> None:
+    first = _run(service.resolve_or_create(None)).conversation
+
+    second = _run(service.start_new())
+
+    assert second.id != first.id
+    assert second.status is ConversationStatus.ACTIVE
+    assert _run(repository.get(first.id)).status is ConversationStatus.ENDED
+
+
+def test_start_new_keeps_the_old_conversation_readable(
+    service: ConversationService,
+) -> None:
+    """**不删数据**：旧会话只是 ended，历史照常可读。
+
+    这一点很重要——用户开新会话是为了摆脱被写坏的历史，
+    不是想把自己说过的话弄丢。
+    """
+    first = _run(service.resolve_or_create(None)).conversation
+    _run(_say(service, first.id, turn_id="01T1", text="你好", reply="你好呀"))
+
+    _run(service.start_new())
+    history = _run(service.load_history(first.id))
+
+    assert [message.content for message in history] == ["你好", "你好呀"]
+
+
+def test_resolve_or_create_returns_the_new_conversation_after_start_new(
+    service: ConversationService,
+) -> None:
+    _run(service.resolve_or_create(None))
+    fresh = _run(service.start_new())
+
+    resolved = _run(service.resolve_or_create(None))
+
+    assert resolved.conversation.id == fresh.id
+    assert resolved.created is False
+
+
+def test_start_new_works_when_no_conversation_exists_yet(
+    service: ConversationService,
+) -> None:
+    conversation = _run(service.start_new())
+
+    assert conversation.status is ConversationStatus.ACTIVE
+
+
+def test_start_new_does_not_touch_memories_or_state(
+    service: ConversationService,
+) -> None:
+    """会话轮换只动 conversations 表——记忆与状态在别的表里，不该被牵连。"""
+    first = _run(service.resolve_or_create(None)).conversation
+    second = _run(service.start_new())
+
+    assert first.id != second.id
+    # 两段会话都属于同一个 (user_id, companion_id)，所以记忆与状态的键没变
+    assert first.user_id == second.user_id
+    assert first.companion_id == second.companion_id

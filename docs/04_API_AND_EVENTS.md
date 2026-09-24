@@ -143,6 +143,20 @@ LLM 不可用时同样是 200，但 `status` 为 `failed`、`failure.code` 给�
 `stt_provider` / `tts_provider` 的值来自 `ASTRA_STT_PROVIDER` / `ASTRA_TTS_PROVIDER`
 （M4 起；之前是写死的 `"none"`）。**key 集合不变**——客户端从 M0 起就能写死解析。
 
+### POST /v1/conversations
+
+**结束当前会话并立即开一段新的**（M4 追加，见 `decisions/0023`）。
+
+请求体为空。返回 **201**：
+
+```json
+{"conversation_id": "01J...", "started_at": "2026-09-24T13:00:00+00:00"}
+```
+
+- 旧会话只被置为 `ended`，**不删除任何数据**——历史、记忆、状态都还在，
+  `GET /v1/conversations/{id}/messages` 照常可读。
+- 没有它的话，一段被写坏的历史只能靠 60 分钟空闲超时才能脱身。
+
 ### GET /v1/conversations/{conversation_id}/messages
 
 按 **id 升序**返回该会话的全部消息。未知会话返回 **404**。

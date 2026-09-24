@@ -72,6 +72,36 @@ class ConversationService:
         if existing is not None:
             await self._repository.end(existing.id, ended_at=now)
 
+        return ResolvedConversation(
+            conversation=await self._create_active(now),
+            created=True,
+        )
+
+    async def start_new(self) -> Conversation:
+        """结束当前 active 会话（如果有）并**立即**开一段新的。
+
+        **为什么需要它**：``resolve_or_create`` 只在**空闲超时**后才切分会话，
+        所以一段被写坏的历史会把模型带偏很久，而用户没有任何办法脱身。
+        实测踩到过：早期 ``llm_provider=none`` 时产生的降级回复
+        （"我现在还没有接上语言模型，所以没法回话"）被当成正常 assistant 消息
+        写进历史，堆了十几条之后，4B 模型开始**照抄**那句最频繁的回复。
+
+        显式开新会话本来就是客户端该有的能力——Unity 端也需要"开一段新对话"。
+
+        **不删除任何数据**：旧会话只是被置为 ``ended``，历史、记忆、状态都还在
+        （``GET /v1/conversations/{id}/messages`` 仍可读）。
+        """
+        now = self._clock()
+        existing = await self._repository.find_active(
+            user_id=self._user_id,
+            companion_id=self._companion_id,
+        )
+        if existing is not None:
+            await self._repository.end(existing.id, ended_at=now)
+
+        return await self._create_active(now)
+
+    async def _create_active(self, now: datetime) -> Conversation:
         conversation = Conversation(
             id=new_id(),
             user_id=self._user_id,
@@ -80,8 +110,7 @@ class ConversationService:
             status=ConversationStatus.ACTIVE,
         )
         await self._repository.create(conversation)
-
-        return ResolvedConversation(conversation=conversation, created=True)
+        return conversation
 
     async def load_history(self, conversation_id: str) -> tuple[Message, ...]:
         """读取该会话的全部消息（按 id 升序）。

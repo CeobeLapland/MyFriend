@@ -110,6 +110,13 @@ class ConversationHistoryBody(BaseModel):
     messages: list[MessageBody]
 
 
+class ConversationBody(BaseModel):
+    """``POST /v1/conversations`` 的响应：刚开出来的那段会话。"""
+
+    conversation_id: str
+    started_at: datetime
+
+
 class ConfigBody(BaseModel):
     """``GET /v1/config`` 的非敏感运行配置。
 

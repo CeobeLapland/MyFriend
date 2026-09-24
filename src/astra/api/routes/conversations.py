@@ -1,6 +1,11 @@
-"""``GET /v1/conversations/{id}/messages`` —— 读取历史。
+"""``/v1/conversations`` —— 读历史与开新会话。
 
-M1 的用途：验证"重启后历史还在"（`docs/10_TESTING_AND_ACCEPTANCE.md` §4）。
+``GET /{id}/messages`` 的用途：验证"重启后历史还在"
+（`docs/10_TESTING_AND_ACCEPTANCE.md` §4）。
+
+``POST /v1/conversations``（M4 追加）：**结束当前会话并立刻开一段新的**。
+没有它的话，一段被写坏的历史只能靠 60 分钟空闲超时才能脱身——
+实测踩到过模型照抄历史里堆叠的降级回复。
 
 未知会话由 ``ConversationService.load_history`` 抛
 :class:`~astra.domain.errors.ConversationNotFoundError`，再由 ``app.py`` 注册的
@@ -11,15 +16,30 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, status
 
 from astra.api.dependencies import get_conversations
-from astra.api.schemas import ConversationHistoryBody, MessageBody
+from astra.api.schemas import ConversationBody, ConversationHistoryBody, MessageBody
 from astra.application.conversation_service import ConversationService
 
 router = APIRouter(prefix="/v1/conversations", tags=["conversations"])
 
 ConversationsDep = Annotated[ConversationService, Depends(get_conversations)]
+
+
+@router.post(
+    "",
+    response_model=ConversationBody,
+    status_code=status.HTTP_201_CREATED,
+    summary="开一段新会话（当前会话被置为 ended，不删除任何数据）",
+)
+async def create_conversation(conversations: ConversationsDep) -> ConversationBody:
+    conversation = await conversations.start_new()
+
+    return ConversationBody(
+        conversation_id=conversation.id,
+        started_at=conversation.started_at,
+    )
 
 
 @router.get(
