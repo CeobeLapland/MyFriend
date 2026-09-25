@@ -101,11 +101,12 @@ begin new turn
 
 ## 5. Unity Client
 
-推荐：
+**M5 实际使用的版本**（见 [ADR 0024](decisions/0024-m5-avatar-runtime.md)）：
 
-- Unity 6 LTS 系列。
-- UniVRM。
-- VRM 1.0。
+- **Unity 2022.3 LTS**（实测本机为 `2022.3.48f1c1`；原文写的 Unity 6 LTS 与
+  实际环境冲突，本机没装、工程要迁移，2022.3 已经够用）。
+- **UniVRM 0.131.0**（`com.vrmc.vrm` + `com.vrmc.gltf`，`displayName: VRM-1.0`）。
+- **VRM 1.0**（vrmlib 的 `XYZ_RightUpForward_RH`，模型朝 **+Z**）。
 
 Unity 端不要关心：
 
@@ -216,12 +217,16 @@ LLM 不需要为每次眨眼调用一次模型。
   "type": "avatar.expression.set",
   "version": 1,
   "payload": {
+    "turn_id": "01J...",
     "emotion": "happy",
-    "intensity": 0.72,
-    "duration_ms": 800
+    "intensity": 0.72
   }
 }
 ```
+
+> **没有 `duration_ms`**：实现里没有这个字段（它曾经写在这份文档里）。
+> 过渡时长由客户端自己定——M5 的 Unity 端用 0.25 s 插值（ADR 0024）。
+> `emotion` 是**归一化后**的值，必定在 `/v1/config` 的 `emotions` 词表内。
 
 ### Action
 

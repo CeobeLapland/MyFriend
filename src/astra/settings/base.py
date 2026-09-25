@@ -58,6 +58,13 @@ class BaseSettingsMixin:
     #: 空闲多久后自动结束当前会话并新开一个（ADR 0012）
     conversation_idle_minutes: int = Field(default=60, ge=1)
 
+    # ── Avatar（M5）─────────────────────────────────────
+    #: 形象客户端（Unity + VRM）是否接入。**纯通告，不门控任何东西**——
+    #: `avatar.expression.set` / `avatar.action.play` 无论它为何值都会发布。
+    #: 理由见 ADR 0024：`docs/04` §2 的事件序列本身就无条件列出这两个事件，
+    #: 且开发者控制台的原始事件流需要看到它们。
+    avatar_enabled: bool = False
+
     # ── 健康检查 ────────────────────────────────────────
     health_probe_timeout_s: float = Field(default=2.0, gt=0)
     health_db_required: bool = True

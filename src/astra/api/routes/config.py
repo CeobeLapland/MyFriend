@@ -37,8 +37,8 @@ async def read_config(settings: SettingsDep, memories: MemoryDep) -> ConfigBody:
         # M4 起读真值。**key 集合不变**——只是这两个字段从 "none" 变成真实值
         stt_provider=settings.stt_provider,
         tts_provider=settings.tts_provider,
-        # M5 接 Unity 时才实现，`ASTRA_AVATAR_ENABLED` 在 .env.example 里仍保持注释
-        avatar_enabled=False,
+        # M5 起读真值。**纯通告**：它不门控 avatar.* 事件的发布（见 ADR 0024）
+        avatar_enabled=settings.avatar_enabled,
         emotions=list(EMOTION_CHOICES),
         actions=list(ACTION_CHOICES),
         voice_styles=list(VOICE_STYLE_CHOICES),

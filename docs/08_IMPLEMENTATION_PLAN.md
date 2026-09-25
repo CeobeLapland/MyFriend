@@ -155,6 +155,13 @@ speak -> transcript -> response -> audio
   与满 GPU 的 LLM 共存时劣化到 10–30 s/句）。代价是纯文本聊天 3–5 s → 6–10 s。
 - **Settings 拆包**：`settings.py` 拆成 `settings/` 包（5 个 mixin），
   字段名与 `ASTRA_*` env 名逐字不变，读取点零改动。
+- **TTS 默认走 zero-shot 音色克隆**：`/rainfall_gen_sft` 的预置音色「开拓者」
+  合成出来像乱码，同一段文本走 `/rainfall_gen_zero_shot` 就正常。配了
+  `ASTRA_TTS_REFERENCE_AUDIO` 就切过去，参考文本由 `/prompt_wav_recognition`
+  自动识别（首次合成时做一次并缓存）。
+- **新增 `POST /v1/conversations`**（ADR 0023）：显式开新会话。在此之前新会话
+  只能靠 60 分钟空闲超时切分，用户没有任何手段摆脱被写坏的历史
+  （实测踩到过模型照抄历史里堆叠的降级回复）。
 - **未做**：`stt.partial` / `tts.chunk` 事件、`voice.style` → instruct 映射、
   麦克风采集的客户端（Unity 端，M5）。
 
@@ -176,6 +183,27 @@ speak -> transcript -> response -> audio
 - TTS 会驱动口型。
 - action 能正确播放。
 - Unity 断开不会影响 backend。
+
+### 实际落点（M5 已完成，见 ADR 0024）
+
+- **形象事件不需要新做**：`avatar.expression.set` / `avatar.action.play` 在 M3 就已经由
+  `Orchestrator` 发布了（与 `docs/04` §2 一致）。M5 的后端改动只有一处：
+  `avatar_enabled` 从硬编码 `False` 改成读 Settings。
+- **`avatar_enabled` 是纯通告**：不门控任何事件（理由见 ADR 0024 §2）。**无新迁移**。
+- **Unity 2022.3 LTS + UniVRM 0.131.0**，不是本文档原本推荐的 Unity 6 LTS
+  （实际环境约束，`docs/07` §5 已同步改）。
+- **只做「能看」**：VRM 显示 + 表情 + 动作 + 口型 + idle。**Unity 内不做麦克风采集**，
+  语音输入仍走浏览器控制台 `/dev`。
+- **动作是程序化骨骼手势**：工程内没有任何动画资源（无 `.anim` / `.controller`），
+  11 个动作全部用 humanoid 骨骼旋转实现，零美术资源、观感朴素。
+- **口型是振幅包络驱动 `Aa`**，不做 phoneme / viseme 时序。
+- **客户端零新增依赖**：`ClientWebSocket`（.NET 自带）+ `Newtonsoft.Json`
+  （`com.unity.nuget.newtonsoft-json` 已在工程里）。
+- **场景在运行时自建**（`[RuntimeInitializeOnLoadMethod]`），用户只需按 Play——
+  不发 `.unity` 资产。
+- **未做**：Unity 内麦克风采集、idle 的 yawn/stretch、
+  `avatar.look_at.set` / `avatar.lipsync.*`（不登记也不发布）、Unity 侧自动化测试；
+  客户端源码不进版本控制（风险，见 ADR 0024 §9）。
 
 ## 7. 阶段 6：Tools
 

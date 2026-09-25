@@ -4,9 +4,10 @@ Local-first AI companion：长期记忆、稳定人格、实时语音、3D 形�
 
 本仓库是 **Astra** 的实现。规格文档在 [`docs/`](docs/)，Agent 执行规则见 [`AGENTS.md`](AGENTS.md)。
 
-当前进度：**M4 完成**（长期记忆 + 情绪/关系状态 + 语音）。
-`文字/语音进 → LM Studio → 结构化回复 → 文字 + 语音出`，带持久化、实时事件流、
-降级、**跨重启的记忆**、**会随互动变化的情绪与关系**，以及**可以打断的语音对话**。
+当前进度：**M5 完成**（长期记忆 + 情绪/关系状态 + 语音 + Unity/VRM 形象）。
+`文字/语音进 → LM Studio → 结构化回复 → 文字 + 语音 + 表情/动作出`，带持久化、
+实时事件流、降级、**跨重启的记忆**、**会随互动变化的情绪与关系**、
+**可以打断的语音对话**，以及**站在画面里、会眨眼会开口说话**的 VRM 形象。
 
 ## 环境要求
 
@@ -17,6 +18,8 @@ Local-first AI companion：长期记忆、稳定人格、实时语音、3D 形�
   - `text-embedding-nomic-embed-text-v1.5`（记忆需要，或改 `ASTRA_EMBEDDING_MODEL`）
 - **CosyVoice3 雨落版整合包**（语音需要，可选）：一个 Gradio 应用，默认
   `http://127.0.0.1:7860`
+- **Unity 2022.3 LTS**（3D 形象需要，可选）：工程在 `E:\UnityProject\VirtualTuber`，
+  已内置 **UniVRM 0.131.0**（支持 VRM 1.0）。**不需要额外装包**
 - Windows / macOS / Linux
 
 > **8GB 显存提示**：chat 模型与 embedding 模型同时加载可能装不下。
@@ -244,6 +247,54 @@ Invoke-RestMethod http://127.0.0.1:8000/health | ConvertTo-Json -Depth 4
 > 见 [ADR 0022](docs/decisions/0022-audio-provider-boundary-and-vram.md)；
 > 二进制帧协议见 [ADR 0021](docs/decisions/0021-audio-binary-frame-protocol.md)。
 
+## 形象（M5）
+
+她**站在一个 Unity 窗口里**：会按情绪换表情、按语义播动作、说话时嘴跟着动、
+平时会呼吸和眨眼。形象走 **Unity 2022.3 + UniVRM 0.131.0 + VRM 1.0**
+（模型 `Celandine.vrm`，自带全套表情与 `aa/ih/ou/ee/oh` 口型）。
+
+```powershell
+# 1) 起后端（形象是纯客户端，后端只多一个通告字段）
+$env:PATH = "$env:USERPROFILE\.local\bin;$env:PATH"
+$env:ASTRA_LLM_PROVIDER="lmstudio"; $env:ASTRA_EMBEDDING_PROVIDER="lmstudio"
+$env:ASTRA_AVATAR_ENABLED="true"
+uv run astra serve
+
+# 2) 打开 Unity 工程，按 Play（不需要建场景、不需要拖任何组件）
+#    工程：E:\UnityProject\VirtualTuber
+#    （第一次打开会导入 UniVRM 并生成 Library，要等一会儿）
+```
+
+按 Play 之后：相机/灯光/角色/界面都由 **运行时代码自动建好**，
+画面左上角有一个输入框——在那里打字发送，就能看到她的表情和动作；
+勾上「语音模式」后（默认已勾），TTS 音频会被播出来并驱动口型。
+
+Unity 端**自己实现**的部分（协议细节见 `docs/04` §3）：
+
+- `GET /v1/config` 取情绪/动作**词表**（不硬编码；ADR 0015 的单一真相）。
+- `WS /ws/v1/session/{session_id}` 收发。**二进制帧不是事件**，靠
+  `WebSocketReceiveResult.MessageType` 与 JSON 帧区分（ADR 0021）。
+- `avatar.expression.set` → 表情（8 个后端情绪 → 6 个 VRM 标准表情，映射表在
+  `AstraAvatar.cs` 里，**近似项已标注**）。
+- `avatar.action.play` → 11 个动作，**全部是代码程序化骨骼手势**（工程里没有任何
+  动画资源，零美术管线；观感朴素，见 ADR 0024）。
+- `tts.started` + 二进制帧 + `tts.completed` → 攒齐后建 `AudioClip` 播放，
+  用 **30 ms RMS 包络**驱动 `Aa` 口型（整段批发，服务端不做流式）。
+- `turn.interrupted` → **立刻**停音频 + 停动作 + 闭嘴（`docs/10` §7 Scenario D）。
+
+要点：
+
+- **Unity 断开不影响 backend**：客户端关连接**不发任何取消**，在跑的 turn 会照常跑完
+  并落库（M1b 的契约）。
+- **Unity 里不做麦克风采集**（M5 的范围是"只做能看"）。语音输入仍走浏览器控制台
+  `/dev`；Unity 端负责"播音频 + 对口型"。
+- **口型是振幅驱动的，不是音素对齐**：`docs/07` §9 允许 MVP 用 volume based。
+- **音频总线是全局广播**：Unity 与 `/dev` 同时在线时**两边都会收到音频**。
+
+> 为什么 Unity 版本不是文档原先推荐的 Unity 6、为什么动作用程序化手势、
+> 为什么 `duration_ms` 不存在——见
+> [ADR 0024](docs/decisions/0024-m5-avatar-runtime.md)。
+
 ## 开发者控制台
 
 浏览器打开 **http://127.0.0.1:8000/dev**
@@ -287,6 +338,46 @@ Invoke-RestMethod http://127.0.0.1:8000/health | ConvertTo-Json -Depth 4
 情绪 / 动作 / 音色风格的**白名单不在这个文件里**，它们在
 `src/astra/domain/vocabulary.py`：那是与 Unity 端的协议契约，必须有单一真相，
 并通过 `GET /v1/config` 分发给客户端。
+
+## 验收（M5）
+
+**这一节的最后几步只能由人在 Unity 里做**——后端全绿不代表 Unity 里能看到东西。
+
+```powershell
+uv run pytest -q                          # 全绿（1058 条）
+uv run ruff check src tests ; uv run ruff format --check src tests ; uv run mypy src
+```
+
+然后：
+
+```powershell
+# 0) 后端（终端 1）
+$env:PATH = "$env:USERPROFILE\.local\bin;$env:PATH"
+$env:ASTRA_LLM_PROVIDER="lmstudio"; $env:ASTRA_EMBEDDING_PROVIDER="lmstudio"
+$env:ASTRA_AVATAR_ENABLED="true"
+uv run astra serve
+
+# 1) Unity Hub → 打开 E:\UnityProject\VirtualTuber
+#    → 打开 Assets/Scenes/SampleScene.unity → 按 Play
+#    应该看到：Celandine 站在画面中央、面向相机、在呼吸和眨眼
+#    Console 里应该有：astra: loading vrm ... / astra: ws connected
+
+# 2) 左上角输入框输入「谢谢你，你真的太厉害了，我很喜欢你。」→ 回车
+#    应该看到：表情变成开心、播一个动作
+#    事件日志里出现 assistant.text.completed / avatar.expression.set / avatar.action.play
+
+# 3) 输入「今天好累啊」→ 表情与动作应该换一个
+
+# 4) 验证「Unity 断开不影响 backend」：
+#    停止 Play → 浏览器打开 http://127.0.0.1:8000/dev → 仍能正常对话、/health 正常
+
+# 5) 口型（需要 CosyVoice 在跑 + LLM 已挪回 CPU，见"语音（M4）"的准备）：
+#    重新 Play → 从 Unity 输入框发一句话
+#    应该看到：听到她的声音，嘴跟着声音开合，说完闭回去
+
+# 6) 打断：/dev 里进语音模式 → 让 Unity 说一句 → 说到一半从 /dev 按住说话
+#    应该看到：Unity 端声音立刻停、动作停、嘴闭回去
+```
 
 ## 验收（M4）
 
@@ -459,7 +550,31 @@ src/astra/
 - **小模型会吐词表外的值**：换用 `nvidia/nemotron-3-nano-4b` 时实测出现过
   `emotion.primary="nervous"`，被归一化降级成 `neutral`（设计如此）。
   它的 `memory_candidates` 也基本为空——4B 在"主动提取记忆"这件事上明显弱于 9B。
-- 尚未接 Unity / 3D 形象（M5）。
+
+### 形象（M5）的已知限制
+
+- **动作是代码程序化手势，不是美术动画**：这个 Unity 工程里没有任何动画资源，
+  11 个动作全部用 humanoid 骨骼旋转实现。观感**明显朴素**，而且不同 VRM 的骨骼
+  局部轴可能不同——手臂手势的旋转轴是按常见朝向猜的，可能需要按观感调
+  `AstraActions.cs` 里对应那一行。
+- **表情映射有损**：后端 8 个情绪 ↔ VRM 6 个标准表情。`excited`→`happy`、
+  `sleepy`→`relaxed`、**`embarrassed`→`relaxed` 是最勉强的**，很可能"看起来不像害羞"。
+  映射表只有 8 行，在 `AstraAvatar.cs` 里，可逐条调。
+- **口型是振幅驱动的，不是音素对齐**：只驱动 `Aa`，所以"啊"和"嘘"看起来一样。
+  真正的 viseme 需要音素时序，后端不提供。可用 `AstraConfig.LipSyncGain` 调开口幅度。
+- **Unity 里不做麦克风采集**：M5 的范围是"只做能看"。语音**输入**仍走浏览器控制台
+  `/dev`，Unity 端只负责"播音频 + 对口型 + 表情 + 动作"。
+- **客户端源码没有版本控制**：Unity 工程 `E:\UnityProject\VirtualTuber` 不是 git 仓库，
+  用户在工程内开发（`Assets/Astra/Scripts/`）。误删即永久丢失——这是本里程碑最实在的
+  风险，最便宜的保险是在该工程里 `git init` + 一份 Unity `.gitignore`（见 ADR 0024 §9）。
+- **界面是 IMGUI 开发界面，不是产品 UI**：一个输入框 + 状态行 + 事件日志，
+  和开发者控制台一样属于工具，不是给最终用户看的界面。
+- **运行时会自建整个场景**（`[RuntimeInitializeOnLoadMethod]`），所以它会在该工程
+  **任意场景**进入 Play 时执行。这个工程是 Astra 专用壳，可接受。
+- **模型从 `StreamingAssets` 按真实文件路径加载**：只在桌面端成立；
+  将来上 Android 要改走 `UnityWebRequest`。
+- **`tts.started → 首个可见口型` 有一整句的等待**：服务端整段合成完毕才开始推流
+  （ADR 0011 不做流式），所以她是"想完了才开口"，不是边说边想。
 
 ## 文档
 

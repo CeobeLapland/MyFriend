@@ -186,6 +186,26 @@ def test_config_reports_the_configured_audio_providers(db_path: Path) -> None:
     }
 
 
+def test_config_reports_avatar_enabled(db_path: Path) -> None:
+    """M5：``avatar_enabled`` 从硬编码 ``False`` 改成读 Settings。
+
+    **key 集合不变**——它从 M0 起就在响应体里。这个字段是**纯通告**，
+    不门控 ``avatar.*`` 事件的发布（见 ADR 0024）；门控行为由
+    ``tests/integration/test_chat_ws.py`` 的事件序列测试守着。
+    """
+    settings = Settings(
+        _env_file=None,
+        db_path=db_path,
+        log_level="WARNING",
+        avatar_enabled=True,
+    )
+
+    with TestClient(create_app(settings)) as client:
+        body = client.get("/v1/config").json()
+
+    assert body["avatar_enabled"] is True
+
+
 # ── 开新会话 ────────────────────────────────────────────
 
 
