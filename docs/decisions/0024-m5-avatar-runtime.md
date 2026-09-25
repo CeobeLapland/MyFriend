@@ -156,3 +156,28 @@ Unity `.gitignore`；本 ADR 只记录现状，不擅自执行。
   这只在桌面端成立，将来上 Android 要改走 `UnityWebRequest`。
 - **音频总线是全局广播**（ADR 0021 的既有局限）：Unity 与浏览器 `/dev` 同时在线时
   **两边都会收到音频**。单用户本地场景可接受，验收时会看到这个现象。
+- **动画的完整清单与骨骼归属约定**记在 Unity 工程里的
+  `Assets/Astra/ANIMATION.md`（客户端实现细节，不入后端仓库）。
+  M5 之后又补了几层**纯代码**、不需要美术资源的表演：
+
+  1. **放松站姿**（`AstraRestPose`）：模型按规范是 T-pose，站着不动完全不像活人。
+     这里叠一组固定的静止姿态偏移把手臂放下来（A-pose）。
+     **轴向是实测解自 VRM 的 humanoid 骨骼**（上臂/前臂的 local Z = 世界 +Z，
+     T-pose 下左臂指向 +X、右臂指向 -X），不是猜的——否则手臂会往奇怪的方向甩。
+  2. **第 1 层**（`AstraIdle`）：呼吸、肩膀起伏、重心转移、头部漂移、
+     **说话时随重音点头 / 句尾上扬**、**聆听时前倾点头**、偶发歪头/看别处/换腿。
+  3. **表情细节层**（`AstraFace`）：VRM 1.0 只有 6 个标准表情，而模型有 56 个 blendshape——
+     标准只占了 15 个索引。以 `happy` 为例，`Fcl_ALL_Joy` 是"整脸"合成形、一次性给满，
+     看起来就是硬切；叠上 `Fcl_EYE_Joy`（眯眼）+ `Fcl_BRW_Joy`（眉毛），观感立刻不同。
+     做法是**绕过 VRM 表达式系统**，直接 `SkinnedMeshRenderer.SetBlendShapeWeight`
+     写那批没有 VRM 表达式在用的索引（互不冲突）。
+  4. **第 2 层**（`AstraActions`）：缓动 + 预备动作 + 过冲 + 不对称，手势不再"线性正弦"。
+  5. **开发者面板**：把每个动作/表情做成按钮单独触发，站姿与细节强度做成实时滑杆——
+     没有它就只能靠"发一句对话"去碰运气，微调无从下手。
+
+  接外部美术动画是第 3 层，见该文档 §13。
+- **第 3 层的素材已实测可用**：本地 `G:\ProjectsRelate\unity素材\EndField\Animation`
+  那批 FBX 是**纯骨骼、Mixamo 标准命名、无手指骨骼**（`mixamorig:Hips/Spine/...`），
+  正是 Unity Humanoid 自动映射最理想的形态，不需要重定向工具。
+  已复制一个进 `Assets/Astra/Animations/` 供验证；剩下的唯一一步需要在编辑器里
+  把 Rig 设成 Humanoid（客户端动作，无法由代码代替）。

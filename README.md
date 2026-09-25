@@ -294,6 +294,10 @@ Unity 端**自己实现**的部分（协议细节见 `docs/04` §3）：
 > 为什么 Unity 版本不是文档原先推荐的 Unity 6、为什么动作用程序化手势、
 > 为什么 `duration_ms` 不存在——见
 > [ADR 0024](docs/decisions/0024-m5-avatar-runtime.md)。
+>
+> **动画/表演行为的完整清单**（已实现了什么、各自的触发条件、骨骼归属约定、
+> 怎么加新的、Mixamo 怎么接）在 Unity 工程里的
+> `Assets/Astra/ANIMATION.md`——那是客户端实现细节，刻意不放进后端仓库。
 
 ## 开发者控制台
 
