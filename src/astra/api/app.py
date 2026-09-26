@@ -25,6 +25,7 @@ from astra.api.routes.dev import router as dev_router
 from astra.api.routes.health import router as health_router
 from astra.api.routes.memories import router as memories_router
 from astra.api.routes.state import router as state_router
+from astra.api.routes.studio import router as studio_router
 from astra.application.conversation_service import ConversationService
 from astra.application.event_bus import EventBus
 from astra.application.health_service import HealthService
@@ -114,6 +115,10 @@ def create_app(
     app.include_router(memories_router)
     app.include_router(state_router)
     app.include_router(chat_ws_router)
+
+    # Studio 是应用本体，**无条件挂载**（ADR 0025 §5）：设成 prod 也照常可用。
+    # 与下面只挂 dev 的 /dev 相反——这条差异由 tests/integration/test_studio_console.py 钉住
+    app.include_router(studio_router)
 
     # 开发者控制台只在 dev 环境挂载——绑到 0.0.0.0 时把 ASTRA_ENV 设成 prod 即可关掉
     if settings.env == "dev":

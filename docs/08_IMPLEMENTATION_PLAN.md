@@ -295,3 +295,8 @@ Requirements:
 
 **产品 UI**（角色形象、对话气泡、设置页）仍然属于 P1/P2，需要独立的技术选型
 与设计，届时另开 ADR。两者看的东西不同，控制台在产品 UI 出来后依然有用。
+
+**实际落点**：产品 UI 在 M5 之后开工，落成 **Studio**（`GET /studio`，阶段 1 =
+对话 / 组件状态 / 角色状态 / 记忆管理）。选型见 ADR 0025，实施拆解见
+`.trae/documents/studio-implementation.md`。它与控制台的挂载规则**相反**：
+Studio 无条件挂载（`ASTRA_ENV=prod` 也在），`/dev` 仍是仅 dev。

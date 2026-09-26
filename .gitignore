@@ -36,7 +36,7 @@ data/*
 logs/
 
 # ── Agent / IDE / OS ────────────────────────────────────
-.trae/
+# .trae/
 .idea/
 .DS_Store
 Thumbs.db

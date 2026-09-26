@@ -299,6 +299,45 @@ Unity 端**自己实现**的部分（协议细节见 `docs/04` §3）：
 > 怎么加新的、Mixamo 怎么接）在 Unity 工程里的
 > `Assets/Astra/ANIMATION.md`——那是客户端实现细节，刻意不放进后端仓库。
 
+## Studio（产品界面）
+
+浏览器打开 **http://127.0.0.1:8000/studio**
+
+这是应用本体——日常用的那个界面。左栏切页（**对话 / 记忆**），中间是对话，
+右栏常驻**组件状态**（5 个 health key 的实时值、耗时与原因）与**角色状态**
+（7 维情绪 + 5 维关系的条形显示，以及最近一次的表情 / 动作标签）。
+
+**阶段 1 已具备**：
+
+- **对话**：发消息（结果走 WebSocket 实时渲染）、**新会话**、载入历史；被打断的那一轮
+  打上「已被打断」标记而**不会消失**。上一轮还在跑时再发一条就会打断它（barge-in）。
+- **组件状态**：每 10 秒轮询 `/health`，**串行排期 + 8 秒超时**。下游全挂时 `/health`
+  单次要 ~6 秒，所以探测失败**不会**把面板闪成"挂了"——保留上次的值并标注它是多少秒前的；
+  每个组件还会显示探针给出的原因（例如 `backend unreachable`）。
+- **角色状态**：`GET /v1/state` + 跟着 `state.*` / `avatar.*` 事件实时更新。
+- **记忆**：列表、**语义检索**（`?query=`，按相关度排序）、编辑（内容 / 类型 /
+  重要度 / 置信度）、**删除**（二次确认，真实删除）、清空（二次确认且写明条数）、
+  导出 JSON、**启用开关**（运行时生效，不用重启）。
+
+**已知限制（阶段 1）**：
+
+- **没有语音**：语音输入 / 输出排在阶段 3（移植 `/dev` 已经工作的音频链路）。
+- **还不能改配置**：LLM / STT / TTS 的 provider 与模型仍改 `.env` 后重启后端
+  （阶段 2 做"写 `.env` + 一键重启"）。
+- **没有动画页**：动画映射仍只在 Unity 工程里维护（阶段 3 改成后端托管）。
+- **检索结果不显示相似度分**：`GET /v1/memories?query=` 只返回条目、不返回分数，
+  界面只说"按相关度排序"——阶段 1 刻意不新增业务端点。
+- **不做进程管理**：不重启也不强杀 LM Studio / CosyVoice，状态只如实显示。
+- **记忆删除不可恢复**：没有回收站（刻意如此）。
+- **两个窗口**：形象在 Unity（M5），界面在浏览器。桌面壳不在阶段 1。
+- 页面与 `/v1` API 一样**没有鉴权**：安全边界是默认绑定 `127.0.0.1`。Studio
+  **无条件挂载**（`ASTRA_ENV=prod` 也在），与只在 dev 挂载的 `/dev` 相反——
+  理由见 [ADR 0025](docs/decisions/0025-studio-application.md)。
+
+实现是零构建、零 npm、零新增依赖：单文件 `src/astra/api/static/studio.html` +
+一个 `FileResponse` 路由。守门测试在 `tests/integration/test_studio_console.py`
+（离线可用、只用 `textContent` 渲染、脚本必须可被解析、prod 环境也在、七个依赖端点都存在）。
+
 ## 开发者控制台
 
 浏览器打开 **http://127.0.0.1:8000/dev**
@@ -314,7 +353,8 @@ Unity 端**自己实现**的部分（协议细节见 `docs/04` §3）：
 
 **这是开发工具，不是产品 UI**（见 [ADR 0017](docs/decisions/0017-developer-console.md)）。
 它看的是协议与运行状态——原始事件、health、stub、重试、耗时、记忆、状态；
-产品 UI 看的是角色。两者不冲突，控制台在产品 UI 做出来之后依然有用。
+产品 UI（Studio，`/studio`）看的是角色。两者不冲突——Studio 做出来之后，
+这个控制台依然有用（而且语音输入目前在 Studio 里还没做，阶段 1 仍走 `/dev`）。
 
 - 零构建、零 npm、零新增依赖：单文件 HTML + 原生 JS。
 - **只在 `ASTRA_ENV=dev`（默认）时挂载**。如果你把 `ASTRA_HTTP_HOST` 改成
@@ -343,12 +383,47 @@ Unity 端**自己实现**的部分（协议细节见 `docs/04` §3）：
 `src/astra/domain/vocabulary.py`：那是与 Unity 端的协议契约，必须有单一真相，
 并通过 `GET /v1/config` 分发给客户端。
 
+## 验收（Studio · 阶段 1）
+
+> **状态：代码与自动化门已就绪，下面这 8 步真机验收待做。** 阶段 1 只做文本路径；
+> 语音 / 配置编辑 / 动画分别在阶段 3 / 2 / 3，不在此列。
+
+```powershell
+# 准备：LM Studio 起 REST 并加载模型（纯文本场景放 GPU 更快；CosyVoice 可以关着）
+lms server start
+lms load nvidia/nemotron-3-nano-4b --gpu max
+# 后端（仓库没有 .env，用内联环境变量）
+$env:ASTRA_LLM_PROVIDER="lmstudio"; $env:ASTRA_EMBEDDING_PROVIDER="lmstudio"
+$env:ASTRA_LLM_MODEL="nvidia/nemotron-3-nano-4b"
+uv run astra serve                        # → http://127.0.0.1:8000/studio
+```
+
+```text
+1. 打开 /studio —— 界面出来了，右栏组件状态是真实值
+   （LLM=ok；STT/TTS=not_configured——不是"永远 ok"）
+
+2. 验证"慢 health 不骗人"：先 lms server stop → 刷新页面，llm 变 down、界面不卡死；
+   再 lms server start → 轮询后自己回到 ok
+
+3. 说一句话 —— 回复出现在气泡里，右栏情绪条跟着动
+
+4. 打断：连续发两条 —— 第一条被打上「已被打断」标记、第二条正常回
+
+5. 点「新会话」—— 对话区清空，但记忆页里旧记忆还在
+
+6. 记忆页搜一句话 —— 语义检索出相关条目（?query=）
+
+7. 删掉一条记忆（二次确认后）—— 再搜不再出现
+
+8. 关掉 Studio 页面 —— 后端不受影响（打开 /dev 还能正常对话；M1b 契约）
+```
+
 ## 验收（M5）
 
 **这一节的最后几步只能由人在 Unity 里做**——后端全绿不代表 Unity 里能看到东西。
 
 ```powershell
-uv run pytest -q                          # 全绿（1058 条）
+uv run pytest -q                          # 全绿（1078 条，含 Studio 的 19 条守门测试）
 uv run ruff check src tests ; uv run ruff format --check src tests ; uv run mypy src
 ```
 
