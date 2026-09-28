@@ -1,0 +1,131 @@
+﻿uv : INFO add_decision: Id::<PubGrubPackage>(0) @ 0a0.dev0 without checking dependencies    
+At line:15 char:2206
++ ... ing]::UTF8; uv run --with pywebview python .trae/prototypes/desktop_e ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSpecified: (INFO add_decisi...ependencies    :String) [], RemoteException
+    + FullyQualifiedErrorId : NativeCommandError
+ 
+INFO add_decision: Id::<PubGrubPackage>(1) @ 6.2.1 without checking dependencies    
+INFO add_decision: Id::<PubGrubPackage>(2) @ 3.1.0 without checking dependencies    
+INFO add_decision: Id::<PubGrubPackage>(3) @ 3.1.0 without checking dependencies    
+INFO add_decision: Id::<PubGrubPackage>(7) @ 3.1.0 without checking dependencies    
+INFO add_decision: Id::<PubGrubPackage>(4) @ 0.1.0 without checking dependencies    
+INFO add_decision: Id::<PubGrubPackage>(5) @ 0.13.4 without checking dependencies    
+INFO add_decision: Id::<PubGrubPackage>(6) @ 4.16.0 without checking dependencies    
+INFO add_decision: Id::<PubGrubPackage>(8) @ 0.3.1 without checking dependencies    
+INFO add_decision: Id::<PubGrubPackage>(9) @ 2.1.1 without checking dependencies    
+INFO add_decision: Id::<PubGrubPackage>(10) @ 3.0 without checking dependencies    
+INFO add_decision: Id::<PubGrubPackage>(11) @ 3.0 without checking dependencies    
+INFO add_decision: Id::<PubGrubPackage>(12) @ 3.0 without checking dependencies    
+libpng warning: iCCP: known incorrect sRGB profile
+libpng warning: iCCP: known incorrect sRGB profile
+libpng warning: iCCP: known incorrect sRGB profile
+libpng warning: iCCP: known incorrect sRGB profile
+libpng warning: iCCP: known incorrect sRGB profile
+libpng warning: iCCP: known incorrect sRGB profile
+libpng warning: iCCP: known incorrect sRGB profile
+libpng warning: iCCP: known incorrect sRGB profile
+libpng warning: iCCP: known incorrect sRGB profile
+libpng warning: iCCP: known incorrect sRGB profile
+壳窗口=2885160 Unity 窗口=592768 dpi=1.500
+{
+  "shell_hwnd": 2885160,
+  "unity_hwnd": 592768,
+  "dpi_scale": 1.5,
+  "slot_rect_css": {
+    "x": 24,
+    "y": 150,
+    "width": 918,
+    "height": 549.3333740234375,
+    "visible": true
+  },
+  "applied_rect": [
+    36,
+    225,
+    1377,
+    824
+  ],
+  "player_style": "0x50000000",
+  "shell_children": [
+    {
+      "hwnd": 592768,
+      "class": "UnityWndClass",
+      "rect": [
+        275,
+        498,
+        1377,
+        824
+      ],
+      "visible": true
+    },
+    {
+      "hwnd": 593494,
+      "class": "WindowsForms10.Window.8.app.0.aec740_r22_ad1",
+      "rect": [
+        239,
+        273,
+        1448,
+        1084
+      ],
+      "visible": true
+    }
+  ],
+  "unity_parent_is_shell": true,
+  "rect": {
+    "unity_rect_client": [
+      36,
+      225,
+      1377,
+      824
+    ],
+    "expected": [
+      36,
+      225,
+      1377,
+      824
+    ],
+    "max_delta_px": 0,
+    "matches": true
+  },
+  "foreground_is_shell": true,
+  "render_sample": {
+    "distinct": 1,
+    "top_color": "#231F20",
+    "top_share": 1.0
+  },
+  "focus": {
+    "after_click_unity": "unity",
+    "after_click_page": "webview"
+  },
+  "resize": {
+    "applied_before": [
+      36,
+      225,
+      1377,
+      824
+    ],
+    "applied_after": [
+      36,
+      225,
+      1587,
+      944
+    ],
+    "changed": true
+  },
+  "rect_after_resize": {
+    "unity_rect_client": [
+      36,
+      225,
+      1587,
+      944
+    ],
+    "expected": [
+      36,
+      225,
+      1587,
+      944
+    ],
+    "max_delta_px": 0,
+    "matches": true
+  }
+}
