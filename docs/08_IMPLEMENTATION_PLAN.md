@@ -298,7 +298,8 @@ Requirements:
 
 **实际落点**：产品 UI 在 M5 之后开工，落成 **Studio**（`GET /studio`，阶段 1 =
 对话 / 组件状态 / 角色状态 / 记忆管理；阶段 2 = 配置读写 + 一键重启 + LM Studio
-模型管理 + 事件页）。选型见 ADR 0025、进程模型与配置写入的边界见 ADR 0026，
-实施拆解见 `.trae/documents/studio-implementation.md` 与 `studio-phase2.md`。
-它与控制台的挂载规则**相反**：Studio 与 `/v1/admin/*` 无条件挂载
+模型管理 + 事件页；阶段 3 = 语音对话 + 动画映射托管）。选型见 ADR 0025、
+进程模型与配置写入的边界见 ADR 0026、语音与动画托管的边界见 ADR 0027，
+实施拆解见 `.trae/documents/studio-implementation.md`、`studio-phase2.md` 与 `studio-phase3.md`。
+它与控制台的挂载规则**相反**：Studio、`/v1/admin/*` 与 `/v1/avatar/animation` 无条件挂载
 （`ASTRA_ENV=prod` 也在），`/dev` 仍是仅 dev。

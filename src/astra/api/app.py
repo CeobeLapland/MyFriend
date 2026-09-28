@@ -21,6 +21,7 @@ from astra.api.connection_manager import ConnectionManager
 from astra.api.routes.admin_config import router as admin_config_router
 from astra.api.routes.admin_lmstudio import router as admin_lmstudio_router
 from astra.api.routes.admin_system import router as admin_system_router
+from astra.api.routes.avatar import router as avatar_router
 from astra.api.routes.chat import router as chat_router
 from astra.api.routes.chat_ws import router as chat_ws_router
 from astra.api.routes.config import router as config_router
@@ -125,6 +126,8 @@ def create_app(
     app.include_router(admin_config_router)
     app.include_router(admin_system_router)
     app.include_router(admin_lmstudio_router)
+    # 动画映射的权威副本（Unity 从它拉、Studio 编辑它）——与 Studio 一样无条件挂载
+    app.include_router(avatar_router)
 
     # Studio 是应用本体，**无条件挂载**（ADR 0025 §5）：设成 prod 也照常可用。
     # 与下面只挂 dev 的 /dev 相反——这条差异由 tests/integration/test_studio_console.py 钉住

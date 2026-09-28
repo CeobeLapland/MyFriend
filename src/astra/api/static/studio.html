@@ -51,7 +51,8 @@
 
   /* ── 左栏 ───────────────────────────────── */
   .nav { display: flex; flex-direction: column; gap: 24px; padding: 20px 14px;
-         background: var(--surface); border-right: 1px solid var(--border); }
+         background: var(--surface); border-right: 1px solid var(--border);
+         overflow-y: auto; }
   .brand { display: flex; align-items: center; gap: 10px; padding: 0 8px; font-size: 16px; font-weight: 600; }
   .logo { width: 9px; height: 9px; border-radius: 50%; background: var(--accent);
           box-shadow: 0 0 14px rgba(92, 245, 168, .75); }
@@ -67,7 +68,11 @@
   .nav-foot .sid { font-family: var(--mono); opacity: .65; word-break: break-all; }
 
   /* ── 中栏 ───────────────────────────────── */
-  .main { display: flex; flex-direction: column; min-width: 0; }
+  /* min-height: 0 是**必须的**：grid 子项的 min-height 默认是 auto（= 内容高度），
+     内容比视口高时它会把隐式行一起撑大、整个 grid 溢出 100vh，再被 body 的
+     overflow:hidden 裁掉——里面那些 overflow-y:auto 的滚动容器于是全部失效
+     （设置页/模型页/事件页/记忆页/长历史的对话区都踩这一条）。 */
+  .main { display: flex; flex-direction: column; min-width: 0; min-height: 0; }
   .page { display: flex; flex-direction: column; flex: 1; min-height: 0; }
   .page[hidden] { display: none; }
   .page-head { display: flex; align-items: flex-start; gap: 16px;
@@ -102,6 +107,14 @@
   .notice { align-self: center; max-width: 88%; text-align: center; font-size: 12px; color: var(--muted); }
   .composer { display: flex; gap: 10px; padding: 12px 28px 20px; }
   .composer input { flex: 1; border-radius: 12px; padding: 11px 14px; }
+
+  /* ── 语音 ───────────────────────────────── */
+  .voice-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+               padding: 0 28px 18px; font-size: 12px; color: var(--muted); }
+  .talk { user-select: none; touch-action: none; padding: 7px 18px; }
+  .talk.active { background: var(--danger); border-color: var(--danger); color: #fff; font-weight: 600; }
+  .voice-status { font-family: var(--mono); font-size: 11px; }
+  .voice-status.warn { color: var(--warn); }
 
   /* ── 记忆 ───────────────────────────────── */
   .memory-toolbar { display: flex; gap: 10px; padding: 16px 28px 10px; }
@@ -156,6 +169,20 @@
   .evt .evt-time { color: var(--muted); flex: none; }
   .evt .evt-type { color: var(--accent); flex: none; min-width: 210px; }
   .evt .evt-payload { color: var(--muted); word-break: break-all; }
+
+  /* ── 动画页 ─────────────────────────────── */
+  .anime-card { background: var(--surface); border: 1px solid var(--border);
+                border-radius: 14px; padding: 12px 14px; margin-bottom: 10px; }
+  .anime-card .top { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .anime-card .top .name { font-size: 13px; }
+  .anime-rows { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+  .anime-clip { display: grid; grid-template-columns: minmax(0, 1fr) 84px 74px 40px;
+                gap: 8px; align-items: center; }
+  .anime-clip .loop { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); }
+  .anime-clip input[type=checkbox] { width: 14px; height: 14px; accent-color: var(--accent); }
+  .anime-clip button { padding: 3px 8px; font-size: 12px; }
+  .anime-slot { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 10px;
+                align-items: center; margin-top: 8px; font-size: 12px; color: var(--muted); }
 
   /* ── 右栏 ───────────────────────────────── */
   .rail { display: flex; flex-direction: column; gap: 14px; overflow-y: auto;
@@ -219,6 +246,7 @@
       <button type="button" class="menu-item" data-page="config">设置</button>
       <button type="button" class="menu-item" data-page="models">模型</button>
       <button type="button" class="menu-item" data-page="events">事件</button>
+      <button type="button" class="menu-item" data-page="anime">动画</button>
     </nav>
     <div class="nav-foot">
       <div class="conn"><span class="dot" id="ws-dot"></span><span id="ws-state">连接中…</span></div>
@@ -243,6 +271,11 @@
         <input type="text" id="text" placeholder="说点什么…（回车发送；上一轮还在跑时再发一条就会打断它）" autocomplete="off">
         <button type="submit" class="primary" id="send">发送</button>
       </form>
+      <div class="voice-row">
+        <label class="switch"><input type="checkbox" id="voice-mode"><span>语音模式（回复合成语音）</span></label>
+        <button type="button" class="talk" id="talk" disabled>按住说话</button>
+        <span class="voice-status" id="voice-status">—</span>
+      </div>
     </section>
 
     <section class="page" id="page-memory" hidden>
@@ -349,6 +382,23 @@
       </header>
       <div class="config-body" id="events-list"></div>
     </section>
+
+    <section class="page" id="page-anime" hidden>
+      <header class="page-head">
+        <div>
+          <h1>动画</h1>
+          <p class="sub" id="anime-sub">—</p>
+        </div>
+        <div class="head-actions">
+          <button type="button" id="anime-reload">重新载入</button>
+          <button type="button" id="anime-paste">粘贴导入…</button>
+          <button type="button" id="anime-export">导出 JSON</button>
+          <button type="button" class="primary" id="anime-save">保存到后端</button>
+        </div>
+      </header>
+      <div class="banner" id="anime-banner" hidden></div>
+      <div class="config-body" id="anime-body"></div>
+    </section>
   </main>
 
   <aside class="rail">
@@ -372,6 +422,20 @@
     <p id="restart-text">后端正在重启…</p>
   </div>
 </div>
+
+<dialog id="anime-paste-dialog">
+  <form class="dialog-body" id="anime-paste-form">
+    <h3>粘贴一份动画映射 JSON</h3>
+    <label>内容（把 Unity 工程里 `Assets/StreamingAssets/astra_animation.json` 的内容贴进来）
+      <textarea id="anime-paste-text" spellcheck="false"></textarea>
+    </label>
+    <p class="dialog-error" id="anime-paste-error"></p>
+    <div class="dialog-actions">
+      <button type="button" id="anime-paste-cancel">取消</button>
+      <button type="submit" class="primary">载入到页面</button>
+    </div>
+  </form>
+</dialog>
 
 <dialog id="memory-edit">
   <form class="dialog-body" id="memory-edit-form">
@@ -459,6 +523,24 @@ const app = {
   restarting: false,
   lmstudio: null,
   events: [],
+  anime: { actions: [], raw: null },
+  voice: {
+    // 采集
+    mic: null,
+    stream: null,
+    processor: null,
+    // 播放
+    playback: null,
+    playbackRate: 0,
+    nextPlayTime: 0,
+    sources: new Set(),
+    expectedChunks: 0,
+    chunks: 0,
+    // 来自 /health 的两个组件状态
+    stt: "unknown",
+    tts: "unknown",
+    state: "idle",
+  },
 };
 
 function node(tag, className, text) {
@@ -522,10 +604,12 @@ function showPage(name) {
   el("page-config").hidden = name !== "config";
   el("page-models").hidden = name !== "models";
   el("page-events").hidden = name !== "events";
+  el("page-anime").hidden = name !== "anime";
   if (name === "memory") loadMemories().catch(() => {});
   if (name === "config") loadAdminConfig().catch(reportConfigError);
   if (name === "models") loadLmStudio().catch(reportModelsError);
   if (name === "events") renderEvents();
+  if (name === "anime") loadAnime().catch(reportAnimeError);
 }
 
 function setConnection(kind, text) {
@@ -568,6 +652,11 @@ function renderHealth(health, staleForMs) {
     el("health-foot").textContent =
       "显示的是 " + Math.round(staleForMs / 1000) + " 秒前的探测结果（最近一次没探到）";
   }
+
+  // 语音按钮的可用性只信 /health（ADR 0027 §1：不假装能用）
+  app.voice.stt = (health.components.stt || {}).status || "unknown";
+  app.voice.tts = (health.components.tts || {}).status || "unknown";
+  syncVoiceAvailability();
 }
 
 async function refreshHealth() {
@@ -786,6 +875,9 @@ function handleEvent(event) {
       break;
     case "turn.interrupted":
       interruptTurn(payload);
+      // 服务端只能停止"继续发送"；已经推过来的声音要客户端自己停（docs/10 §7 Scenario D）
+      stopPlayback();
+      setVoiceStatus("已被打断", { state: "idle" });
       break;
     case "turn.failed":
       failTurn(payload);
@@ -808,9 +900,38 @@ function handleEvent(event) {
     case "memory.deleted":
       loadMemories().catch(() => {});
       break;
-    case "error.protocol":
-      createBubble("system", "协议提示：" + (payload.message || payload.code || ""));
+    case "stt.final": {
+      const heard = createBubble("user", payload.text || "");
+      addTags(heard, [{ text: "语音识别" }]);
+      setVoiceStatus("已识别，等待回复…", { state: "recognizing" });
       break;
+    }
+    case "tts.started":
+      ensurePlaybackContext(Number(payload.sample_rate) || 24000);
+      app.voice.expectedChunks = Number(payload.chunk_count) || 0;
+      app.voice.chunks = 0;
+      setVoiceStatus("播放中…", { state: "playing" });
+      break;
+    case "tts.completed":
+      if (payload.status === "failed") {
+        setVoiceStatus("语音合成失败：" + (payload.code || ""), { warn: true, state: "idle" });
+      } else if (app.voice.chunks !== app.voice.expectedChunks) {
+        // 队满时"淘汰最旧"可能丢掉音频中间帧（ADR 0021 的已知局限）
+        createBubble("system",
+          "音频块数对不上：收到 " + app.voice.chunks + " / 期望 " + app.voice.expectedChunks);
+        setVoiceStatus("播放中（有丢帧）", { warn: true, state: "idle" });
+      } else {
+        setVoiceStatus("就绪", { state: "idle" });
+      }
+      break;
+    case "error.protocol": {
+      const code = String(payload.code || "");
+      createBubble("system", "协议提示：" + (payload.message || code));
+      if (code.indexOf("stt") >= 0 || code.indexOf("tts") >= 0) {
+        setVoiceStatus("语音后端报错：" + code, { warn: true, state: "idle" });
+      }
+      break;
+    }
     default:
       break;
   }
@@ -862,6 +983,9 @@ function connect() {
   socket.addEventListener("open", () => {
     app.reconnectDelayMs = 1000;
     setConnection("ok", "已连接");
+    // 重连后补发一次语音模式——否则断线期间切过的开关会丢（/dev 的教训）
+    sendFrame("session.voice_mode.set", { enabled: el("voice-mode").checked });
+    syncVoiceAvailability();
     if (app.connectedOnce) {
       createBubble("system", "已重新连上后端。");
       afterReconnect();
@@ -870,11 +994,20 @@ function connect() {
   });
   socket.addEventListener("close", () => {
     setConnection("down", "连接断开，重连中…");
+    stopRecording();
+    stopPlayback();
+    setTalking(false);
+    syncVoiceAvailability();
     scheduleReconnect();
   });
   socket.addEventListener("error", () => setConnection("down", "连接出错，重连中…"));
   socket.addEventListener("message", (message) => {
-    if (message.data instanceof ArrayBuffer) return;   // 音频帧留给阶段 3
+    if (message.data instanceof ArrayBuffer) {
+      // 二进制帧 = TTS 音频（ADR 0021 的既有语义）
+      app.voice.chunks += 1;
+      playAudioChunk(message.data);
+      return;
+    }
     let event;
     try {
       event = JSON.parse(message.data);
@@ -883,6 +1016,199 @@ function connect() {
     }
     handleEvent(event);
   });
+}
+
+/* ── 语音：照 /dev 已验收的链路移植，协议一行不改（ADR 0027 §1）── */
+
+//: 采集采样率。服务端**不做重采样**，声明的格式与它配置的不符会被拒绝（ADR 0022）
+const INPUT_SAMPLE_RATE = 16000;
+
+function setVoiceStatus(text, options) {
+  const opts = options || {};
+  const box = el("voice-status");
+  box.textContent = text;
+  box.className = opts.warn ? "voice-status warn" : "voice-status";
+  if (opts.state) app.voice.state = opts.state;
+}
+
+function setTalking(talking) {
+  el("talk").classList.toggle("active", talking);
+  el("talk").textContent = talking ? "松开结束" : "按住说话";
+}
+
+//: 语音组件能不能用，只信 /health（不假装按钮能用）
+function syncVoiceAvailability() {
+  const stt = app.voice.stt;
+  const tts = app.voice.tts;
+
+  if (stt === "unknown" || tts === "unknown") {
+    el("talk").disabled = true;
+    el("voice-mode").disabled = true;
+    setVoiceStatus("正在探测语音组件…");
+    return;
+  }
+
+  const sttReady = stt === "ok";
+  const ttsReady = tts === "ok";
+  el("talk").disabled = !sttReady || !socketOpen();
+  el("voice-mode").disabled = !ttsReady;
+  if (!ttsReady) el("voice-mode").checked = false;
+
+  if (app.voice.state !== "idle" && app.voice.state !== "blocked") return;
+
+  if (sttReady && ttsReady) {
+    setVoiceStatus("就绪", { state: "idle" });
+    return;
+  }
+  const parts = [];
+  if (!sttReady) parts.push("语音输入 " + describeVoice(stt));
+  if (!ttsReady) parts.push("语音回复 " + describeVoice(tts));
+  setVoiceStatus(parts.join(" · ") + " —— 去「设置」页配好再保存并重启", {
+    warn: true,
+    state: "blocked",
+  });
+}
+
+function describeVoice(status) {
+  if (status === "not_configured") return "未配置";
+  if (status === "down") return "连不上（CosyVoice 没在跑？）";
+  return "不可用（" + status + "）";
+}
+
+async function startRecording() {
+  if (app.voice.processor) return true;
+
+  const stream = await navigator.mediaDevices.getUserMedia({
+    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+  });
+  // 直接用 16 kHz 的 AudioContext，省掉自己写重采样
+  const context = new AudioContext({ sampleRate: INPUT_SAMPLE_RATE });
+  if (context.sampleRate !== INPUT_SAMPLE_RATE) {
+    await context.close();
+    stream.getTracks().forEach((track) => track.stop());
+    createBubble("system",
+      "浏览器拒绝了 " + INPUT_SAMPLE_RATE + " Hz 的采集（实际 " + context.sampleRate + " Hz），语音输入用不了。");
+    return false;
+  }
+
+  const source = context.createMediaStreamSource(stream);
+  const processor = context.createScriptProcessor(4096, 1, 1);
+  const mute = context.createGain();
+  mute.gain.value = 0;              // 不把自己的声音放出来（否则会啸叫）
+  processor.connect(mute);
+  mute.connect(context.destination);
+
+  processor.onaudioprocess = (event) => {
+    const input = event.inputBuffer.getChannelData(0);
+    const pcm = new Int16Array(input.length);
+    for (let i = 0; i < input.length; i += 1) {
+      pcm[i] = Math.round(Math.max(-1, Math.min(1, input[i])) * 32767);
+    }
+    if (socketOpen()) app.socket.send(pcm.buffer);
+  };
+  source.connect(processor);
+
+  app.voice.mic = context;
+  app.voice.stream = stream;
+  app.voice.processor = processor;
+  return true;
+}
+
+function stopRecording() {
+  const voice = app.voice;
+  if (voice.processor) {
+    voice.processor.onaudioprocess = null;
+    voice.processor.disconnect();
+    voice.processor = null;
+  }
+  if (voice.stream) {
+    voice.stream.getTracks().forEach((track) => track.stop());
+    voice.stream = null;
+  }
+  if (voice.mic) {
+    voice.mic.close().catch(() => {});
+    voice.mic = null;
+  }
+}
+
+function stopPlayback() {
+  for (const source of app.voice.sources) {
+    try { source.stop(); } catch { /* 已经播完的节点 stop 会抛，忽略 */ }
+  }
+  app.voice.sources.clear();
+  app.voice.nextPlayTime = 0;
+}
+
+function ensurePlaybackContext(sampleRate) {
+  const voice = app.voice;
+  if (voice.playback && voice.playbackRate === sampleRate) return voice.playback;
+  stopPlayback();
+  if (voice.playback) voice.playback.close().catch(() => {});
+  voice.playback = new AudioContext({ sampleRate: sampleRate });
+  voice.playbackRate = sampleRate;
+  return voice.playback;
+}
+
+function playAudioChunk(buffer) {
+  const playback = app.voice.playback;
+  if (!playback) return;
+
+  const samples = new Int16Array(buffer);
+  const audioBuffer = playback.createBuffer(1, samples.length, playback.sampleRate);
+  const channel = audioBuffer.getChannelData(0);
+  for (let i = 0; i < samples.length; i += 1) channel[i] = samples[i] / 32768;
+
+  const source = playback.createBufferSource();
+  source.buffer = audioBuffer;
+  source.connect(playback.destination);
+
+  // 逐块排队播放：每块接在上一次结束的位置，听起来是连续的
+  const startAt = Math.max(playback.currentTime, app.voice.nextPlayTime);
+  source.start(startAt);
+  app.voice.nextPlayTime = startAt + audioBuffer.duration;
+
+  app.voice.sources.add(source);
+  source.onended = () => app.voice.sources.delete(source);
+}
+
+async function beginTalk() {
+  if (app.voice.processor) return;
+  if (!socketOpen()) {
+    createBubble("system", "还没连上后端，稍等一下再按住说话。");
+    return;
+  }
+  if (app.voice.stt !== "ok") {
+    syncVoiceAvailability();
+    createBubble("system", "现在不能语音输入（" + describeVoice(app.voice.stt) + "）：去「设置」页配好语音组件再保存并重启。");
+    return;
+  }
+
+  setTalking(true);
+  setVoiceStatus("正在听…", { state: "listening" });
+
+  let started = false;
+  try {
+    started = await startRecording();
+  } catch (error) {
+    createBubble("system", "拿不到麦克风：" + error.message);
+  }
+  if (!started) {
+    setTalking(false);
+    setVoiceStatus("麦克风不可用", { warn: true, state: "idle" });
+    return;
+  }
+  // 先声明格式再送字节——服务端按这条声明解释后面的二进制帧
+  sendFrame("input.audio.started", {
+    encoding: "pcm16", sample_rate: INPUT_SAMPLE_RATE, channels: 1,
+  });
+}
+
+function endTalk() {
+  if (!app.voice.processor) return;
+  sendFrame("input.audio.stopped", {});
+  stopRecording();
+  setTalking(false);
+  setVoiceStatus("识别中…", { state: "recognizing" });
 }
 
 /* ── 会话与历史 ───────────────────────────────────────── */
@@ -1505,6 +1831,238 @@ function renderEvents() {
   box.scrollTop = box.scrollHeight;
 }
 
+/* ── 动画页：后端托管的映射（ADR 0027 §2 / §3）────────── */
+
+const ANIME_POSES = ["sit", "lie"];
+
+function reportAnimeError(error) {
+  const banner = el("anime-banner");
+  banner.replaceChildren(node("p", "note danger", "动画页出错：" + error.message));
+  banner.hidden = false;
+}
+
+//: 三个块都补成数组，后面的编辑逻辑才好直接改；未知字段原样留着（保存时一起 PUT 回去）
+function normalizeAnime(raw) {
+  const config = raw && typeof raw === "object" ? raw : {};
+  if (!Array.isArray(config.idlePool)) config.idlePool = [];
+  if (!Array.isArray(config.actions)) config.actions = [];
+  if (!Array.isArray(config.poses)) config.poses = [];
+  return config;
+}
+
+function animeClipRow(ref, list, rerender) {
+  const row = node("div", "anime-clip");
+
+  const clip = node("input");
+  clip.type = "text";
+  clip.spellcheck = false;
+  clip.placeholder = "clip 名（Unity 里那个）";
+  clip.value = typeof ref.clip === "string" ? ref.clip : "";
+  clip.addEventListener("input", () => { ref.clip = clip.value; });
+  row.appendChild(clip);
+
+  const weight = node("input");
+  weight.type = "number";
+  weight.step = "any";
+  weight.min = "0";
+  weight.value = typeof ref.weight === "number" ? String(ref.weight) : "1";
+  weight.addEventListener("input", () => { ref.weight = Number(weight.value); });
+  row.appendChild(weight);
+
+  const loopLabel = node("label", "loop");
+  const loopBox = node("input");
+  loopBox.type = "checkbox";
+  loopBox.checked = ref.loop === true;
+  loopBox.addEventListener("change", () => { ref.loop = loopBox.checked; });
+  loopLabel.append(loopBox, node("span", null, "循环"));
+  row.appendChild(loopLabel);
+
+  const remove = node("button", "danger", "×");
+  remove.type = "button";
+  remove.title = "删除这一条";
+  remove.addEventListener("click", () => {
+    list.splice(list.indexOf(ref), 1);
+    rerender();
+  });
+  row.appendChild(remove);
+
+  return row;
+}
+
+function animeClipList(container, list, rerender) {
+  container.replaceChildren();
+  for (const ref of list) container.appendChild(animeClipRow(ref, list, rerender));
+
+  const add = node("button", null, "添加 clip");
+  add.type = "button";
+  add.addEventListener("click", () => {
+    list.push({ clip: "", weight: 1, loop: false });
+    rerender();
+  });
+  container.appendChild(add);
+}
+
+function animeCard(title, badge) {
+  const card = node("div", "anime-card");
+  const top = node("div", "top");
+  top.appendChild(node("span", "name", title));
+  if (badge) top.appendChild(node("span", "badge", badge));
+  card.appendChild(top);
+  return card;
+}
+
+function animeHeading(text) {
+  const box = node("div", "cfg-group");
+  box.appendChild(node("h2", null, text));
+  return box;
+}
+
+function renderAnime() {
+  const box = el("anime-body");
+  box.replaceChildren();
+  const config = app.anime.raw;
+
+  const idleCard = animeCard("待机池", config.idlePool.length + " 条");
+  const idleBody = node("div", "anime-rows");
+  animeClipList(idleBody, config.idlePool, renderAnime);
+  idleCard.appendChild(idleBody);
+  box.appendChild(idleCard);
+
+  box.appendChild(animeHeading("动作（没配的走程序化手势）"));
+  for (const name of app.anime.actions) {
+    let binding = config.actions.find((item) => item && item.action === name) || null;
+    const bound = binding && Array.isArray(binding.clips) ? binding.clips.length : 0;
+    const card = animeCard(name, bound > 0 ? bound + " 个 clip" : "未配");
+    const body = node("div", "anime-rows");
+
+    if (binding && Array.isArray(binding.clips)) {
+      animeClipList(body, binding.clips, renderAnime);
+    } else {
+      const add = node("button", null, "添加 clip");
+      add.type = "button";
+      add.addEventListener("click", () => {
+        binding = { action: name, clips: [{ clip: "", weight: 1, loop: false }] };
+        config.actions.push(binding);
+        renderAnime();
+      });
+      body.appendChild(add);
+    }
+    card.appendChild(body);
+    box.appendChild(card);
+  }
+
+  box.appendChild(animeHeading("姿态（三件套齐全才会启用）"));
+  for (const poseName of ANIME_POSES) {
+    const binding = config.poses.find((item) => item && item.pose === poseName) || null;
+    const ready = binding && typeof binding.enter === "string" && binding.enter.trim() !== ""
+      && typeof binding.exit === "string" && binding.exit.trim() !== ""
+      && Array.isArray(binding.loop) && binding.loop.length > 0;
+    const card = animeCard(poseName, ready ? "已启用" : "未配");
+
+    // 只在真的编辑时才把姿态推进数组——不写一堆空条目
+    const ensurePose = () => {
+      let found = config.poses.find((item) => item && item.pose === poseName) || null;
+      if (!found) {
+        found = { pose: poseName, enter: "", loop: [], exit: "" };
+        config.poses.push(found);
+      }
+      if (!Array.isArray(found.loop)) found.loop = [];
+      return found;
+    };
+
+    for (const slot of ["enter", "exit"]) {
+      const row = node("div", "anime-slot");
+      row.appendChild(node("span", null, slot));
+      const input = node("input");
+      input.type = "text";
+      input.spellcheck = false;
+      input.placeholder = slot === "enter" ? "进入姿态的 clip（播一次）" : "离开姿态的 clip（播一次）";
+      input.value = binding && typeof binding[slot] === "string" ? binding[slot] : "";
+      input.addEventListener("input", () => { ensurePose()[slot] = input.value; });
+      row.appendChild(input);
+      card.appendChild(row);
+    }
+
+    const loopRow = node("div", "anime-slot");
+    loopRow.appendChild(node("span", null, "loop"));
+    const loopBody = node("div", "anime-rows");
+    if (binding && Array.isArray(binding.loop)) {
+      animeClipList(loopBody, binding.loop, renderAnime);
+    } else {
+      const add = node("button", null, "添加循环 clip");
+      add.type = "button";
+      add.addEventListener("click", () => {
+        ensurePose().loop.push({ clip: "", weight: 1, loop: true });
+        renderAnime();
+      });
+      loopBody.appendChild(add);
+    }
+    loopRow.appendChild(loopBody);
+    card.appendChild(loopRow);
+
+    box.appendChild(card);
+  }
+}
+
+async function loadAnime() {
+  // 11 个动作名以后端词表为准（单一真相在 vocabulary，ADR 0015）
+  const vocabulary = await fetchJson("/v1/config", null, 8000);
+  app.anime.actions = Array.isArray(vocabulary.actions) ? vocabulary.actions : [];
+
+  let raw = null;
+  let missing = false;
+  try {
+    raw = await fetchJson("/v1/avatar/animation", null, 15000);
+  } catch (error) {
+    if (String(error.message).indexOf("404") < 0) throw error;
+    missing = true;
+  }
+
+  app.anime.raw = normalizeAnime(raw);
+  el("anime-sub").textContent = missing
+    ? "后端还没有副本"
+    : "后端权威副本（Unity 连上时拉取，工程里那份只是缓存）";
+
+  const banner = el("anime-banner");
+  banner.replaceChildren();
+  if (missing) {
+    banner.appendChild(node("p", "note warn",
+      "后端还没有动画映射副本：跑一次 Unity 客户端会自动上报，或点「粘贴导入」把现有 JSON 贴进来。"));
+  }
+  banner.hidden = !missing;
+
+  renderAnime();
+  return app.anime.raw;
+}
+
+function animeText() {
+  return JSON.stringify(app.anime.raw, null, 2) + "\n";
+}
+
+function downloadJson(filename, text) {
+  const blob = new Blob([text], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
+async function saveAnime() {
+  const text = animeText();
+  const result = await fetchJson("/v1/avatar/animation", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: text,
+  }, 20000);
+  createBubble("system",
+    "动画映射已保存到后端（" + result.bytes + " 字节 → " + result.path + "）。Unity 下次连上就会用上。");
+  await loadAnime();
+}
+
 /* ── 事件绑定 ─────────────────────────────────────────── */
 
 for (const item of document.querySelectorAll(".menu-item")) {
@@ -1606,11 +2164,69 @@ el("events-pause").addEventListener("change", (event) => {
   if (!event.target.checked) renderEvents();
 });
 
+/* ── 语音的事件绑定 ───────────────────────────────────── */
+
+el("voice-mode").addEventListener("change", (event) => {
+  const enabled = event.target.checked && app.voice.tts === "ok";
+  sendFrame("session.voice_mode.set", { enabled: enabled });
+  if (!enabled) stopPlayback();
+  syncVoiceAvailability();
+});
+
+// pointer 事件同时覆盖鼠标与触屏；pointerleave 兜住"按着拖出去松手"
+el("talk").addEventListener("pointerdown", (event) => {
+  event.preventDefault();
+  beginTalk().catch((error) => createBubble("system", "语音输入出错：" + error.message));
+});
+el("talk").addEventListener("pointerup", (event) => {
+  event.preventDefault();
+  endTalk();
+});
+el("talk").addEventListener("pointercancel", () => endTalk());
+el("talk").addEventListener("pointerleave", () => endTalk());
+
+/* ── 动画页的事件绑定 ─────────────────────────────────── */
+
+el("anime-reload").addEventListener("click", () => { loadAnime().catch(reportAnimeError); });
+
+el("anime-save").addEventListener("click", () => { saveAnime().catch(reportAnimeError); });
+
+el("anime-export").addEventListener("click", () => {
+  downloadJson("astra_animation.json", animeText());
+});
+
+el("anime-paste").addEventListener("click", () => {
+  el("anime-paste-text").value = "";
+  el("anime-paste-error").textContent = "";
+  el("anime-paste-dialog").showModal();
+});
+
+el("anime-paste-cancel").addEventListener("click", () => el("anime-paste-dialog").close());
+
+el("anime-paste-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  const text = el("anime-paste-text").value.trim();
+  if (!text) {
+    el("anime-paste-error").textContent = "先贴一份 JSON 进来。";
+    return;
+  }
+  try {
+    app.anime.raw = normalizeAnime(JSON.parse(text));
+  } catch (error) {
+    el("anime-paste-error").textContent = "解析失败：" + error.message;
+    return;
+  }
+  el("anime-paste-dialog").close();
+  renderAnime();
+  createBubble("system", "已把粘贴的映射载入动画页——确认无误后点「保存到后端」。");
+});
+
 /* ── 启动 ─────────────────────────────────────────────── */
 
 app.sessionId = newUlid();
 el("session-id").textContent = "session " + app.sessionId.slice(0, 8);
 renderAvatarTags();
+syncVoiceAvailability();
 connect();
 refreshHealth();
 loadState();

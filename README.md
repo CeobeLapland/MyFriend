@@ -304,7 +304,7 @@ Unity 端**自己实现**的部分（协议细节见 `docs/04` §3）：
 
 浏览器打开 **http://127.0.0.1:8000/studio**
 
-这是应用本体——日常用的那个界面。左栏切页（**对话 / 记忆 / 设置 / 模型 / 事件**），
+这是应用本体——日常用的那个界面。左栏切页（**对话 / 记忆 / 设置 / 模型 / 事件 / 动画**），
 中间是页内容，右栏常驻**组件状态**（5 个 health key 的实时值、耗时与原因）与
 **角色状态**（7 维情绪 + 5 维关系的条形显示，以及最近一次的表情 / 动作标签）。
 
@@ -334,23 +334,40 @@ Unity 端**自己实现**的部分（协议细节见 `docs/04` §3）：
 - **事件页**：最近 300 条 WebSocket 事件（进出都有），可暂停滚动 —— 取代 `/dev` 的原始
   事件流面板来做日常排查。
 
-**已知限制（阶段 2 为止）**：
+**阶段 3 已具备**（语音与动画托管）：
 
-- **没有语音**：语音输入 / 输出排在阶段 3（移植 `/dev` 已经工作的音频链路）。
-- **没有动画页**：动画映射仍只在 Unity 工程里维护（阶段 3 改成后端托管）。
+- **语音对话**（push-to-talk）：勾「语音模式」→ 按住说话 → 转写进气泡、回复用她的声音念出来；
+  她说到一半时再按住说话会**立刻打断**（声音停、`turn.interrupted` 出现在事件页）。
+  协议与 `/dev` 完全一致（16 kHz / 单声道 / PCM16、二进制帧、按 `sample_rate` 播放）。
+- **诚实禁用**：`/health` 里 STT/TTS 不是 `ok` 时按钮就禁用/取消勾选，并写明
+  "去设置页配好再保存并重启"——不假装能用。
+- **动画页**（后端托管映射）：待机池 / 11 个动作 / 坐躺姿态三件套都能在页面里改；
+  clip 名手填（Unity 侧那份清单后端不知道）、可导出 JSON、可粘贴导入。
+  **后端是权威副本**（`data/astra_animation.json`），Unity 每次连上时拉取，
+  工程里那份文件降级为**缓存**；后端连不上时 Unity 继续用本地缓存（不会变成"没动画"）。
+
+**已知限制（阶段 3 为止）**：
+
 - **人格（`persona.toml`）不能编辑**：仍要手编 toml 后重启（结构化编辑在 P2）。
 - **改配置要重启后端**（`extra="forbid"` 与 `lru_cache` 的代价，ADR 0025 §2）；
   **重启会中断在跑的 turn**。
+- **动画编辑要 Unity 重进 Play 才生效**：Unity 是在"连上后端"时拉一次（不做运行时热更）。
+- **clip 名在 Studio 里手填**：Unity 侧的 clip 清单没有上报给后端（P1 可选）。
+- **Unity 面板与 Studio 都能改映射**：面板保存会尽力上报后端；上报失败时日志会如实说明
+  "本地是新的、后端还是旧的，下次连上会被覆盖"。
+- **两处音频会同时播**：`/dev` 或 Unity 与 Studio 同时开着时，两边都会收到 TTS 音频
+  （既有广播语义，ADR 0021/0027）。
 - **不做进程强杀**：能起停 LM Studio、加载/卸载模型，但不会去杀 CosyVoice 之类的进程；
   后端自身只支持"重启"，不做守护式自愈。
 - **检索结果不显示相似度分**：`GET /v1/memories?query=` 只返回条目、不返回分数，
   界面只说"按相关度排序"。
 - **记忆删除不可恢复**：没有回收站（刻意如此）。
 - **两个窗口**：形象在 Unity（M5），界面在浏览器。桌面壳不在当前阶段。
-- 页面与 `/v1` API 一样**没有鉴权**：安全边界是默认绑定 `127.0.0.1`。Studio 与
-  `/v1/admin/*` 都**无条件挂载**（`ASTRA_ENV=prod` 也在），与只在 dev 挂载的 `/dev` 相反——
-  理由见 [ADR 0025](docs/decisions/0025-studio-application.md) 与
-  [ADR 0026](docs/decisions/0026-studio-admin-and-supervisor.md)。
+- 页面与 `/v1` API 一样**没有鉴权**：安全边界是默认绑定 `127.0.0.1`。Studio、`/v1/admin/*`
+  与 `/v1/avatar/animation` 都**无条件挂载**（`ASTRA_ENV=prod` 也在），与只在 dev 挂载的
+  `/dev` 相反——理由见 [ADR 0025](docs/decisions/0025-studio-application.md)、
+  [ADR 0026](docs/decisions/0026-studio-admin-and-supervisor.md) 与
+  [ADR 0027](docs/decisions/0027-studio-phase3-voice-and-animation.md)。
 
 实现是零构建、零 npm、零新增依赖：单文件 `src/astra/api/static/studio.html` +
 静态页路由 + 一组 `/v1/admin/*` 管理端点。守门测试在
@@ -401,6 +418,40 @@ Unity 端**自己实现**的部分（协议细节见 `docs/04` §3）：
 情绪 / 动作 / 音色风格的**白名单不在这个文件里**，它们在
 `src/astra/domain/vocabulary.py`：那是与 Unity 端的协议契约，必须有单一真相，
 并通过 `GET /v1/config` 分发给客户端。
+
+## 验收（Studio · 阶段 3）
+
+> **状态：代码与自动化门已就绪，下面两轮真机验收待做**（语音那轮要人在麦克风前听，
+> 动画那轮要在 Unity 里按 Play）。
+
+**A. 语音**（前置：CosyVoice 雨落版在跑；LLM 按 8GB 显存约束用 `--gpu off`，见 ADR 0022）
+
+```powershell
+uv run astra serve                   # → http://127.0.0.1:8000/studio
+```
+
+```text
+1. 设置页：把 STT/TTS 打开（选 cosyvoice）→ 「保存并重启」→ 右栏 stt/tts 从 not_configured 变 ok
+2. 对话页勾「语音模式」→ 按住说话说一句 → 状态走"正在听… → 识别中… → 播放中"，
+   气泡里出现转写内容，并且**真的听到她的声音**
+3. 她说到一半时再按住说话 → 声音**立刻停**，事件页出现 turn.interrupted，新一轮正常开始
+4. 不勾「语音模式」时按住说话 → 仍能识别，但**不合成语音**（纯文本路径不回归）
+5. 把两个 provider 设回 none 并重启 → 按钮禁用、勾选被取消，并写明去设置页配（不假装能用）
+```
+
+**B. 动画托管**（前置：Unity 工程已备份；后端与 Unity 都在跑）
+
+```text
+1. 冷启动（后端还没有 data/astra_animation.json）：Unity 按 Play →
+   Console 出现"后端还没有动画映射副本——把本地这份上报上去（首次播种）"
+   → 「动画」页立刻能看到那 11 条待机池与已配的 7 个动作
+2. 在动画页改一条（例如给 wave 换个 clip）→ 「保存到后端」→
+   Unity 里退出 Play 再进入 → Console 显示"动画配置已应用（来自 后端）"，动作看得出差别
+3. 停掉后端 → Unity 再按 Play → 动画照常（本地缓存兜底），Console 如实写"继续用本地缓存"
+4. 在 Unity 面板里改一条并保存 → Console 写"动画配置已上报给后端" →
+   动画页「重新载入」能看到这条改动
+5. 在动画页填一个非法值（未知动作名 / 空 clip 名 / 权重 0）→ 保存被拒并指出是第几条
+```
 
 ## 验收（Studio · 阶段 2）
 
@@ -477,7 +528,7 @@ uv run astra serve                        # → http://127.0.0.1:8000/studio
 **这一节的最后几步只能由人在 Unity 里做**——后端全绿不代表 Unity 里能看到东西。
 
 ```powershell
-uv run pytest -q                          # 全绿（1157 条，含 Studio 阶段的守门测试）
+uv run pytest -q                          # 全绿（1185 条，含 Studio 三个阶段的守门测试）
 uv run ruff check src tests ; uv run ruff format --check src tests ; uv run mypy src
 ```
 

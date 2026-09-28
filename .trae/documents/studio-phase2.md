@@ -222,6 +222,15 @@ uv run astra serve                        # → http://127.0.0.1:8000/studio（�
    不冒充配置；配置的唯一真相仍是 `.env`。
 7. **不要碰的红线**：`/health` 与 `/v1/config` 的 key 集合不动；`/dev` 不删不改；
    记忆 / 状态仍只走既有 API；不新增 Python 依赖。
+8. **滚动失效这类纯 CSS 问题没法靠守门测试发现**（守门测试只查离线资源与脚本可解析）。
+   已经踩过一次：grid 子项默认 `min-height: auto`，内容比视口高时会把隐式行撑大、
+   整个 grid 溢出 `100vh` 被 `body{overflow:hidden}` 裁掉，**里面所有 `overflow-y:auto`
+   的滚动容器同时失效**（设置页 / 模型页 / 事件页 / 记忆页 / 长历史的对话区）。
+   修法是给 `.main` 一条 `min-height: 0`。
+   复现与验证办法（无需新依赖）：抽出 `studio.html` 的真实 `<style>` 做一个同构骨架，
+   用本机 Edge/Chrome 无头模式 `--dump-dom` 把 `scrollHeight / clientHeight` 写进 DOM 再读出来——
+   修复前后各量一次就能确认（实测：修复前 `scrollable:false`、`bodyScrollHeight 2669 > 视口 698`；
+   修复后 `scrollable:true`、`bodyScrollHeight == 视口`）。
 
 ---
 

@@ -106,7 +106,7 @@ def test_studio_is_not_in_the_openapi_schema(studio_client: TestClient) -> None:
 
 
 def test_studio_has_all_phase_pages(studio_client: TestClient) -> None:
-    """页签：对话 / 记忆（阶段 1）+ 设置 / 模型 / 事件（阶段 2）。"""
+    """页签：对话 / 记忆（阶段 1）+ 设置 / 模型 / 事件（阶段 2）+ 动画（阶段 3）。"""
     body = studio_client.get("/studio").text
 
     assert 'data-page="chat"' in body
@@ -114,6 +114,7 @@ def test_studio_has_all_phase_pages(studio_client: TestClient) -> None:
     assert 'data-page="config"' in body
     assert 'data-page="models"' in body
     assert 'data-page="events"' in body
+    assert 'data-page="anime"' in body
 
 
 # ── Studio 依赖的端点都在 ───────────────────────────────
@@ -143,6 +144,8 @@ def test_studio_has_all_phase_pages(studio_client: TestClient) -> None:
         "/v1/admin/lmstudio/server",
         "/v1/admin/lmstudio/load",
         "/v1/admin/lmstudio/unload",
+        # 阶段 3 的动画页（后端托管映射）
+        "/v1/avatar/animation",
     ],
 )
 def test_studio_backing_endpoints_exist(studio_client: TestClient, path: str) -> None:
