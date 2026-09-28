@@ -15,7 +15,13 @@ from collections.abc import Sequence
 from datetime import datetime
 from pathlib import Path
 
-from astra.domain.conversation import Conversation, ConversationStatus, Message, Role
+from astra.domain.conversation import (
+    Conversation,
+    ConversationStatus,
+    ConversationSummary,
+    Message,
+    Role,
+)
 from astra.infrastructure.db.connection import open_connection
 from astra.infrastructure.db.timestamps import from_iso as _from_iso
 from astra.infrastructure.db.timestamps import to_iso as _to_iso
@@ -40,6 +46,11 @@ class SQLiteConversationRepository:
 
     async def find_active(self, *, user_id: str, companion_id: str) -> Conversation | None:
         return await asyncio.to_thread(self._find_active_sync, user_id, companion_id)
+
+    async def list_summaries(
+        self, *, user_id: str, companion_id: str, limit: int
+    ) -> tuple[ConversationSummary, ...]:
+        return await asyncio.to_thread(self._list_summaries_sync, user_id, companion_id, limit)
 
     async def end(self, conversation_id: str, *, ended_at: datetime) -> None:
         await asyncio.to_thread(self._end_sync, conversation_id, ended_at)
@@ -100,6 +111,56 @@ class SQLiteConversationRepository:
                 "UPDATE conversations SET status = ?, ended_at = ? WHERE id = ?",
                 (ConversationStatus.ENDED.value, _to_iso(ended_at), conversation_id),
             )
+
+    def _list_summaries_sync(
+        self, user_id: str, companion_id: str, limit: int
+    ) -> tuple[ConversationSummary, ...]:
+        """会话列表 + 每个会话的消息数与最后一条消息。
+
+        两条查询而不是 N+1：先取会话（带计数与最后一条消息 id），
+        再一次性把那批消息取回来。**排序按消息 id**（ULID，ADR 0012）——
+        时间戳在本机分辨率下分不出同一毫秒内的先后。
+        """
+        last_id = "(SELECT MAX(m.id) FROM messages m WHERE m.conversation_id = conversations.id)"
+        with open_connection(self._db_path) as conn:
+            rows = conn.execute(
+                f"SELECT {_CONVERSATION_COLUMNS}, "  # noqa: S608 - 列名是模块常量
+                "(SELECT COUNT(*) FROM messages m WHERE m.conversation_id = conversations.id) "
+                "AS message_count, "
+                f"{last_id} AS last_message_id, "
+                "(SELECT m.created_at FROM messages m WHERE m.conversation_id = conversations.id "
+                "ORDER BY m.id DESC LIMIT 1) AS last_message_at "
+                "FROM conversations "
+                "WHERE user_id = ? AND companion_id = ? "
+                f"ORDER BY COALESCE({last_id}, conversations.id) DESC "
+                "LIMIT ?",
+                (user_id, companion_id, limit),
+            ).fetchall()
+
+            last_ids = [str(row["last_message_id"]) for row in rows if row["last_message_id"]]
+            by_id: dict[str, Message] = {}
+            if last_ids:
+                placeholders = ",".join("?" * len(last_ids))
+                message_rows = conn.execute(
+                    f"SELECT {_MESSAGE_COLUMNS} FROM messages "  # noqa: S608 - 列名是模块常量
+                    f"WHERE id IN ({placeholders})",
+                    tuple(last_ids),
+                ).fetchall()
+                by_id = {str(row["id"]): _row_to_message(row) for row in message_rows}
+
+        return tuple(
+            ConversationSummary(
+                conversation=_row_to_conversation(row),
+                message_count=int(row["message_count"]),
+                last_message_at=(
+                    _from_iso(str(row["last_message_at"])) if row["last_message_at"] else None
+                ),
+                last_message=(
+                    by_id.get(str(row["last_message_id"])) if row["last_message_id"] else None
+                ),
+            )
+            for row in rows
+        )
 
     def _last_message_at_sync(self, conversation_id: str) -> datetime | None:
         with open_connection(self._db_path) as conn:

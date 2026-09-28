@@ -47,6 +47,8 @@ _WHITELIST: dict[str, tuple[str, str]] = {
     "ASTRA_EMBEDDING_PROVIDER": ("记忆", "向量化提供方"),
     "ASTRA_EMBEDDING_MODEL": ("记忆", "向量化模型"),
     "ASTRA_MEMORY_ENABLED": ("记忆", "启用记忆（启动期默认值）"),
+    "ASTRA_MEMORY_MAX_CANDIDATES_PER_TURN": ("记忆", "每轮最多自动记几条（0 = 不自动记）"),
+    "ASTRA_MEMORY_TOP_K": ("记忆", "每轮注入几条记忆（0 = 不注入）"),
     "ASTRA_STT_PROVIDER": ("语音", "语音识别（STT）"),
     "ASTRA_TTS_PROVIDER": ("语音", "语音合成（TTS）"),
     "ASTRA_TTS_BASE_URL": ("语音", "CosyVoice 地址"),

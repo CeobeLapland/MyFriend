@@ -117,6 +117,29 @@ class ConversationBody(BaseModel):
     started_at: datetime
 
 
+class ConversationSummaryBody(BaseModel):
+    """``GET /v1/conversations`` 列表里的一行（Studio 的历史栏用）。
+
+    ``last_message_preview`` 是**截断过的开头**，只为在列表里认出来是哪一段；
+    完整内容走 ``GET /v1/conversations/{id}/messages``。
+    """
+
+    conversation_id: str
+    status: str
+    started_at: datetime
+    ended_at: datetime | None = None
+    message_count: int
+    last_message_at: datetime | None = None
+    last_message_role: str | None = None
+    last_message_preview: str | None = None
+
+
+class ConversationListBody(BaseModel):
+    """最近的会话列表（按"最近有过消息"倒序）。"""
+
+    conversations: list[ConversationSummaryBody] = Field(default_factory=list)
+
+
 class ConfigBody(BaseModel):
     """``GET /v1/config`` 的非敏感运行配置。
 

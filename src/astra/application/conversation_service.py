@@ -20,7 +20,13 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
 
-from astra.domain.conversation import Conversation, ConversationStatus, Message, Role
+from astra.domain.conversation import (
+    Conversation,
+    ConversationStatus,
+    ConversationSummary,
+    Message,
+    Role,
+)
 from astra.domain.errors import ConversationNotFoundError
 from astra.domain.ids import new_id
 from astra.domain.ports import ConversationRepository
@@ -111,6 +117,18 @@ class ConversationService:
         )
         await self._repository.create(conversation)
         return conversation
+
+    async def list_summaries(self, *, limit: int = 50) -> tuple[ConversationSummary, ...]:
+        """最近的会话列表（Studio 的历史栏用）。
+
+        **按"最近有过消息"倒序**，只带计数与最后一条消息——完整历史仍走
+        :meth:`load_history`。多人格时这里天然只返回当前 ``companion_id`` 的会话。
+        """
+        return await self._repository.list_summaries(
+            user_id=self._user_id,
+            companion_id=self._companion_id,
+            limit=limit,
+        )
 
     async def load_history(self, conversation_id: str) -> tuple[Message, ...]:
         """读取该会话的全部消息（按 id 升序）。

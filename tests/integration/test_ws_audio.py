@@ -407,6 +407,76 @@ def test_stt_unavailable_when_not_configured(run_server) -> None:
     assert error["payload"]["code"] == "stt_unavailable"
 
 
+# ── 预览模式（ADR 0028）─────────────────────────────────
+
+
+def test_preview_mode_hands_back_the_transcript_without_a_turn(run_server) -> None:
+    """本地 STT 错字多：预览模式只回 ``stt.final``，不自动发出去。"""
+    server = run_server(stt=FakeSTTProvider(text="你好压"), tts=FakeTTSProvider())
+
+    async def scenario() -> _Inbox:
+        async with websockets.connect(f"{server.ws_url}/ws/v1/session/{_SESSION}") as socket:
+            await socket.send(_frame("session.stt_preview.set", {"enabled": True}))
+            await socket.send(_start_audio())
+            await socket.send(_pcm(1600, 8000))
+            await socket.send(_frame("input.audio.stopped", {}))
+            inbox = _Inbox()
+            while True:
+                event = await inbox.recv_one(socket)
+                if event["type"] == EventType.STT_FINAL.value:
+                    return inbox
+
+    inbox = asyncio.run(scenario())
+    final = inbox.find(EventType.STT_FINAL.value)
+
+    assert final is not None
+    assert final["payload"]["text"] == "你好压"
+    assert EventType.TURN_STARTED.value not in inbox.types
+
+
+def test_preview_mode_is_off_by_default(run_server) -> None:
+    """默认关——``/dev`` 与 Unity 的既有行为（转写完直接发）不变。"""
+    server = run_server(stt=FakeSTTProvider(text="直接发"))
+
+    async def scenario() -> _Inbox:
+        async with websockets.connect(f"{server.ws_url}/ws/v1/session/{_SESSION}") as socket:
+            await socket.send(_start_audio())
+            await socket.send(_pcm(1600, 8000))
+            await socket.send(_frame("input.audio.stopped", {}))
+            return await _Inbox().drain(socket)
+
+    inbox = asyncio.run(scenario())
+
+    assert EventType.STT_FINAL.value in inbox.types
+    assert EventType.TURN_STARTED.value in inbox.types
+
+
+def test_preview_then_edited_text_starts_a_normal_turn(run_server) -> None:
+    """预览模式的真实用法：转写 → 用户改掉错字 → ``input.user_text`` → 正常一轮。"""
+    server = run_server(stt=FakeSTTProvider(text="你好压"))
+
+    async def scenario() -> _Inbox:
+        async with websockets.connect(f"{server.ws_url}/ws/v1/session/{_SESSION}") as socket:
+            await socket.send(_frame("session.stt_preview.set", {"enabled": True}))
+            await socket.send(_start_audio())
+            await socket.send(_pcm(1600, 8000))
+            await socket.send(_frame("input.audio.stopped", {}))
+            inbox = _Inbox()
+            while True:
+                event = await inbox.recv_one(socket)
+                if event["type"] == EventType.STT_FINAL.value:
+                    break
+            await socket.send(
+                _frame("input.user_text", {"text": "你好呀"})  # 用户改过的版本
+            )
+            return await _Inbox().drain(socket)
+
+    inbox = asyncio.run(scenario())
+
+    assert EventType.TURN_STARTED.value in inbox.types
+    assert inbox.types[-1] == EventType.TURN_COMPLETED.value
+
+
 def test_audio_and_text_share_the_same_conversation(run_server) -> None:
     """语音与键盘是同一段对话——不然用户会在两个会话里各说一半。"""
     server = run_server(stt=FakeSTTProvider(text="用语音说的话"))

@@ -15,7 +15,7 @@ from datetime import datetime
 from typing import Protocol, runtime_checkable
 
 from astra.domain.audio import AudioArtifact, Transcript, TTSRequest
-from astra.domain.conversation import Conversation, Message
+from astra.domain.conversation import Conversation, ConversationSummary, Message
 from astra.domain.health import ComponentHealth
 from astra.domain.llm import LLMRequest, LLMResponse
 from astra.domain.memory import Memory, MemoryFilter
@@ -120,6 +120,16 @@ class ConversationRepository(Protocol):
 
     async def find_active(self, *, user_id: str, companion_id: str) -> Conversation | None:
         """取该角色最近一个 ``active`` 会话；没有则返回 ``None``。"""
+        ...
+
+    async def list_summaries(
+        self, *, user_id: str, companion_id: str, limit: int
+    ) -> tuple[ConversationSummary, ...]:
+        """按"最近有过消息"倒序返回会话列表（含消息数与最后一条消息）。
+
+        Studio 的历史栏用它；**顺序不按时间戳**，按消息 id（ULID，ADR 0012）——
+        本机时钟分辨率不够，同一毫秒内的时间戳分不出先后。
+        """
         ...
 
     async def end(self, conversation_id: str, *, ended_at: datetime) -> None:

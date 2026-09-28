@@ -80,6 +80,10 @@ class ClientFrameType(StrEnum):
     #: 显式开关语音模式。``docs/11`` §2 要求"只有用户显式进 voice mode 才采集"，
     #: 而"这一轮该不该合成语音"是同一个开关的另一面。
     VOICE_MODE_SET = "session.voice_mode.set"
+    #: 转写后**不自动起一轮**（Studio 的"先改错别字再发"，ADR 0028）。
+    #: 打开时 ``input.audio.*`` 只走 STT，``stt.final`` 之后由客户端用
+    #: ``input.user_text`` 自己决定发不发。
+    STT_PREVIEW_SET = "session.stt_preview.set"
 
 
 @dataclass(frozen=True, slots=True)

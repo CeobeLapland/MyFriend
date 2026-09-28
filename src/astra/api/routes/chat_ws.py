@@ -106,6 +106,14 @@ class VoiceModePayload(BaseModel):
     enabled: bool
 
 
+class SttPreviewPayload(BaseModel):
+    """``session.stt_preview.set`` 的 payload（ADR 0028）。"""
+
+    model_config = ConfigDict(extra="ignore")
+
+    enabled: bool
+
+
 @dataclass(slots=True)
 class _AudioBuffer:
     """一段正在采集的 utterance。"""
@@ -125,6 +133,8 @@ class _SessionState:
     """每条连接一份。"""
 
     voice_mode: bool = False
+    #: 转写后不自动起 turn（Studio 的"先改错别字再发"，ADR 0028）
+    stt_preview: bool = False
     audio: _AudioBuffer | None = None
     turn_task: asyncio.Task[TurnResult] | None = None
     #: 已经为"没有 ``input.audio.started`` 的二进制帧"报过一次协议错误。
@@ -204,6 +214,8 @@ async def _handle_text(
         await _finish_audio(state, bus, stt, orchestrator, session_id, reason="client_stop")
     elif frame.type == ClientFrameType.VOICE_MODE_SET.value:
         _handle_voice_mode(state, bus, frame.payload)
+    elif frame.type == ClientFrameType.STT_PREVIEW_SET.value:
+        _handle_stt_preview(state, bus, frame.payload)
     else:
         _report_error(bus, "invalid_frame", f"unsupported frame type: {frame.type}")
 
@@ -243,6 +255,21 @@ def _handle_voice_mode(state: _SessionState, bus: EventBus, payload: dict[str, A
         return
 
     state.voice_mode = parsed.enabled
+
+
+def _handle_stt_preview(state: _SessionState, bus: EventBus, payload: dict[str, Any]) -> None:
+    """记录"转写完要不要自动发出去"（ADR 0028）。
+
+    本地 STT 错字多，Studio 默认打开它：只回 ``stt.final``，用户改完再用
+    ``input.user_text`` 发。**默认关**——``/dev`` 与 Unity 的既有行为不变。
+    """
+    try:
+        parsed = SttPreviewPayload.model_validate(payload)
+    except ValidationError as exc:
+        _report_error(bus, "invalid_frame", _validation_message("payload", exc))
+        return
+
+    state.stt_preview = parsed.enabled
 
 
 # ── 音频输入 ────────────────────────────────────────────
@@ -425,6 +452,22 @@ async def _finish_audio(
     )
 
     if not transcript.text:
+        return
+
+    # 预览模式：只把转写结果交回客户端，**不起 turn**（ADR 0028）。
+    # 本地 STT 错字多，Studio 让用户改完再发；代价是这一轮的 emotion_hint 用不上
+    # （后面走 input.user_text，没有 hint）——如实记一条日志，不假装它还在。
+    if state.stt_preview:
+        _logger.info(
+            "stt preview: transcript handed back without starting a turn",
+            extra={
+                "event": "stt.preview",
+                "detail": {
+                    "chars": len(transcript.text),
+                    "hint_dropped": transcript.emotion_hint is not None,
+                },
+            },
+        )
         return
 
     await _start_turn(

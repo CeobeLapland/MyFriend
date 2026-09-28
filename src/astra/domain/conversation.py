@@ -43,6 +43,20 @@ class Conversation:
 
 
 @dataclass(frozen=True, slots=True)
+class ConversationSummary:
+    """会话列表里的一行（Studio 的历史栏用）。
+
+    **不是"会话 + 全部消息"**：只带计数与最后一条消息，用来画列表；
+    完整历史仍走 ``load_messages``。
+    """
+
+    conversation: Conversation
+    message_count: int
+    last_message_at: datetime | None
+    last_message: Message | None
+
+
+@dataclass(frozen=True, slots=True)
 class Message:
     """一条已持久化的消息。"""
 
