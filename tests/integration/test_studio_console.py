@@ -105,12 +105,15 @@ def test_studio_is_not_in_the_openapi_schema(studio_client: TestClient) -> None:
     assert "/v1/chat/turns" in paths
 
 
-def test_studio_has_chat_and_memory_pages(studio_client: TestClient) -> None:
-    """阶段 1 的两个页签：对话与记忆（配置 / 动画 / 日志留到后续阶段）。"""
+def test_studio_has_all_phase_pages(studio_client: TestClient) -> None:
+    """页签：对话 / 记忆（阶段 1）+ 设置 / 模型 / 事件（阶段 2）。"""
     body = studio_client.get("/studio").text
 
     assert 'data-page="chat"' in body
     assert 'data-page="memory"' in body
+    assert 'data-page="config"' in body
+    assert 'data-page="models"' in body
+    assert 'data-page="events"' in body
 
 
 # ── Studio 依赖的端点都在 ───────────────────────────────
@@ -132,6 +135,14 @@ def test_studio_has_chat_and_memory_pages(studio_client: TestClient) -> None:
         "/v1/memories/{memory_id}",
         # 右栏的角色状态
         "/v1/state",
+        # 阶段 2 的设置页（读/写 .env + 一键重启）
+        "/v1/admin/config",
+        "/v1/admin/restart",
+        # 阶段 2 的模型页（LM Studio）
+        "/v1/admin/lmstudio",
+        "/v1/admin/lmstudio/server",
+        "/v1/admin/lmstudio/load",
+        "/v1/admin/lmstudio/unload",
     ],
 )
 def test_studio_backing_endpoints_exist(studio_client: TestClient, path: str) -> None:

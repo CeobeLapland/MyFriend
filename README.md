@@ -62,9 +62,10 @@ Copy-Item .env.example .env
 # 4. 初始化数据库
 uv run astra migrate
 
-# 5. 启动服务
+# 5. 启动服务（默认以"监督进程"运行：Studio 的「保存并重启」靠它，见 ADR 0026）
 uv run astra serve
-# → http://127.0.0.1:8000/health
+# → 界面 http://127.0.0.1:8000/studio    健康检查 http://127.0.0.1:8000/health
+#   --no-supervisor 可退回"前台单进程"（此时 Studio 的重启按钮会如实说不可用）
 ```
 
 ## 跟她说句话
@@ -303,9 +304,9 @@ Unity 端**自己实现**的部分（协议细节见 `docs/04` §3）：
 
 浏览器打开 **http://127.0.0.1:8000/studio**
 
-这是应用本体——日常用的那个界面。左栏切页（**对话 / 记忆**），中间是对话，
-右栏常驻**组件状态**（5 个 health key 的实时值、耗时与原因）与**角色状态**
-（7 维情绪 + 5 维关系的条形显示，以及最近一次的表情 / 动作标签）。
+这是应用本体——日常用的那个界面。左栏切页（**对话 / 记忆 / 设置 / 模型 / 事件**），
+中间是页内容，右栏常驻**组件状态**（5 个 health key 的实时值、耗时与原因）与
+**角色状态**（7 维情绪 + 5 维关系的条形显示，以及最近一次的表情 / 动作标签）。
 
 **阶段 1 已具备**：
 
@@ -319,24 +320,42 @@ Unity 端**自己实现**的部分（协议细节见 `docs/04` §3）：
   重要度 / 置信度）、**删除**（二次确认，真实删除）、清空（二次确认且写明条数）、
   导出 JSON、**启用开关**（运行时生效，不用重启）。
 
-**已知限制（阶段 1）**：
+**阶段 2 已具备**（配置与进程）：
+
+- **设置页**：直接改 `.env` 里的常用项（LLM / embedding / STT / TTS 的 provider 与模型、
+  地址、音色与参考音频、若干开关）。每个键都标着**来源**：`.env` / **进程环境** / 默认值——
+  内联 `$env:ASTRA_*` 启动时它会如实告诉你"写文件不会改变这一项"。
+  写入前会校验整份配置（写坏 = 下次启动直接失败），并留一份 `.env.bak`。
+- **保存并重启**：一键写 `.env` + 重启后端（优雅关闭 → 新进程 ≈1 秒）。
+  依赖 `astra serve` 的**监督进程**（ADR 0026）；`--no-supervisor` 时按钮禁用并说明原因。
+- **模型页**：LM Studio 服务启动/停止、本地模型清单（类型 / 参数 / 大小 / 上下文）、
+  加载（`--gpu max|off` + 上下文长度）与卸载。**显存策略是"声明值"**：LM Studio 不暴露
+  "模型跑在 GPU 还是 CPU"，页面记的是 Studio 自己下发的参数并明确标注。
+- **事件页**：最近 300 条 WebSocket 事件（进出都有），可暂停滚动 —— 取代 `/dev` 的原始
+  事件流面板来做日常排查。
+
+**已知限制（阶段 2 为止）**：
 
 - **没有语音**：语音输入 / 输出排在阶段 3（移植 `/dev` 已经工作的音频链路）。
-- **还不能改配置**：LLM / STT / TTS 的 provider 与模型仍改 `.env` 后重启后端
-  （阶段 2 做"写 `.env` + 一键重启"）。
 - **没有动画页**：动画映射仍只在 Unity 工程里维护（阶段 3 改成后端托管）。
+- **人格（`persona.toml`）不能编辑**：仍要手编 toml 后重启（结构化编辑在 P2）。
+- **改配置要重启后端**（`extra="forbid"` 与 `lru_cache` 的代价，ADR 0025 §2）；
+  **重启会中断在跑的 turn**。
+- **不做进程强杀**：能起停 LM Studio、加载/卸载模型，但不会去杀 CosyVoice 之类的进程；
+  后端自身只支持"重启"，不做守护式自愈。
 - **检索结果不显示相似度分**：`GET /v1/memories?query=` 只返回条目、不返回分数，
-  界面只说"按相关度排序"——阶段 1 刻意不新增业务端点。
-- **不做进程管理**：不重启也不强杀 LM Studio / CosyVoice，状态只如实显示。
+  界面只说"按相关度排序"。
 - **记忆删除不可恢复**：没有回收站（刻意如此）。
-- **两个窗口**：形象在 Unity（M5），界面在浏览器。桌面壳不在阶段 1。
-- 页面与 `/v1` API 一样**没有鉴权**：安全边界是默认绑定 `127.0.0.1`。Studio
-  **无条件挂载**（`ASTRA_ENV=prod` 也在），与只在 dev 挂载的 `/dev` 相反——
-  理由见 [ADR 0025](docs/decisions/0025-studio-application.md)。
+- **两个窗口**：形象在 Unity（M5），界面在浏览器。桌面壳不在当前阶段。
+- 页面与 `/v1` API 一样**没有鉴权**：安全边界是默认绑定 `127.0.0.1`。Studio 与
+  `/v1/admin/*` 都**无条件挂载**（`ASTRA_ENV=prod` 也在），与只在 dev 挂载的 `/dev` 相反——
+  理由见 [ADR 0025](docs/decisions/0025-studio-application.md) 与
+  [ADR 0026](docs/decisions/0026-studio-admin-and-supervisor.md)。
 
 实现是零构建、零 npm、零新增依赖：单文件 `src/astra/api/static/studio.html` +
-一个 `FileResponse` 路由。守门测试在 `tests/integration/test_studio_console.py`
-（离线可用、只用 `textContent` 渲染、脚本必须可被解析、prod 环境也在、七个依赖端点都存在）。
+静态页路由 + 一组 `/v1/admin/*` 管理端点。守门测试在
+`tests/integration/test_studio_console.py`（离线可用、只用 `textContent` 渲染、
+脚本必须可被解析、prod 环境也在、依赖端点都存在）。
 
 ## 开发者控制台
 
@@ -365,7 +384,7 @@ Unity 端**自己实现**的部分（协议细节见 `docs/04` §3）：
 
 | 命令 | 作用 |
 |---|---|
-| `uv run astra serve` | 启动 HTTP + WebSocket 服务 |
+| `uv run astra serve` | 启动 HTTP + WebSocket 服务（默认带重启监督，`--no-supervisor` 可关） |
 | `uv run astra chat` | 连上 WebSocket 聊天（REPL） |
 | `uv run astra chat --once "文本"` | 单轮对话，打印完整事件序列 |
 | `uv run astra migrate` | 应用数据库迁移（幂等） |
@@ -383,10 +402,45 @@ Unity 端**自己实现**的部分（协议细节见 `docs/04` §3）：
 `src/astra/domain/vocabulary.py`：那是与 Unity 端的协议契约，必须有单一真相，
 并通过 `GET /v1/config` 分发给客户端。
 
+## 验收（Studio · 阶段 2）
+
+> **状态：代码与自动化门已就绪，下面这 8 步真机验收待做。**
+> 这一阶段**不再需要内联 `$env:ASTRA_*`**——配置从 `.env` 来、在页面里改（ADR 0026）。
+
+```powershell
+Copy-Item .env.example .env          # 仓库里没有 .env；Studio 也会在第一次保存时自动复制
+lms server start                     # 让 /health 的 llm 有东西可探（可选，模型页也能启停）
+uv run astra serve                   # 默认带监督 →  http://127.0.0.1:8000/studio
+```
+
+```text
+1. 设置页：每个键显示当前值与「来源」徽标（.env / 进程环境 / 默认值），
+   `.env` 路径正确，没有 unknown_keys 告警
+
+2. 改 ASTRA_LLM_MODEL → 「保存并重启」→ 遮罩显示"后端正在重启…" → ≈1~2 秒后自己回来，
+   设置页与 `/v1/config` 都显示新模型；说一句话，回复确实来自新模型
+
+3. 填一个非法值（例如温度写 abc）→ 保存被拒、页面给出原因、`.env` 没被写坏
+   （`.env.bak` 还在）
+
+4. 模型页：列出 3 个本地模型；加载 nemotron-4B（gpu max，上下文留空）→
+   「已加载」区块出现它（带 ctx 与大小）；点「卸载」→ 回到未加载
+
+5. 显存策略换成 gpu off 再加载一次 → 页面在"上次由 Studio 下发"里标出这是**声明值**
+
+6. 模型页点「停止服务」→ 右栏 llm 变 down、页面不卡死；点「启动服务」→ 回到 ok
+
+7. 事件页：说一句话，能看到 turn.started / assistant.text.completed / avatar.* 依次出现
+   （自己发出的帧带 → 前缀）
+
+8. 关掉 Studio 浏览器页 → 后端不受影响；回到终端按 Ctrl+C → 父进程与后端**一起**退出，
+   没有残留进程占着 8000
+```
+
 ## 验收（Studio · 阶段 1）
 
 > **状态：代码与自动化门已就绪，下面这 8 步真机验收待做。** 阶段 1 只做文本路径；
-> 语音 / 配置编辑 / 动画分别在阶段 3 / 2 / 3，不在此列。
+> 语音与动画在阶段 3，配置编辑已在阶段 2 落地（见上一节）。
 
 ```powershell
 # 准备：LM Studio 起 REST 并加载模型（纯文本场景放 GPU 更快；CosyVoice 可以关着）
@@ -423,7 +477,7 @@ uv run astra serve                        # → http://127.0.0.1:8000/studio
 **这一节的最后几步只能由人在 Unity 里做**——后端全绿不代表 Unity 里能看到东西。
 
 ```powershell
-uv run pytest -q                          # 全绿（1078 条，含 Studio 的 19 条守门测试）
+uv run pytest -q                          # 全绿（1157 条，含 Studio 阶段的守门测试）
 uv run ruff check src tests ; uv run ruff format --check src tests ; uv run mypy src
 ```
 

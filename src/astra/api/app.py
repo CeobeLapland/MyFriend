@@ -11,12 +11,16 @@ import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import timedelta
+from pathlib import Path
 
 from fastapi import FastAPI, Request, status
 from fastapi.responses import JSONResponse
 
 from astra import __version__
 from astra.api.connection_manager import ConnectionManager
+from astra.api.routes.admin_config import router as admin_config_router
+from astra.api.routes.admin_lmstudio import router as admin_lmstudio_router
+from astra.api.routes.admin_system import router as admin_system_router
 from astra.api.routes.chat import router as chat_router
 from astra.api.routes.chat_ws import router as chat_ws_router
 from astra.api.routes.config import router as config_router
@@ -105,6 +109,8 @@ def create_app(
 
     app.state.settings = settings
     app.state.persona = persona
+    #: Studio 设置页要写的那份 ``.env``。相对 cwd 解析——与 Settings 读的是同一个文件
+    app.state.env_file_path = Path(str(Settings.model_config.get("env_file", ".env"))).resolve()
 
     app.add_exception_handler(ConversationNotFoundError, _conversation_not_found_handler)
 
@@ -115,6 +121,10 @@ def create_app(
     app.include_router(memories_router)
     app.include_router(state_router)
     app.include_router(chat_ws_router)
+    # 管理面（读/写 .env、重启后端、LM Studio）与 Studio 一样**无条件挂载**（ADR 0026 §2）
+    app.include_router(admin_config_router)
+    app.include_router(admin_system_router)
+    app.include_router(admin_lmstudio_router)
 
     # Studio 是应用本体，**无条件挂载**（ADR 0025 §5）：设成 prod 也照常可用。
     # 与下面只挂 dev 的 /dev 相反——这条差异由 tests/integration/test_studio_console.py 钉住

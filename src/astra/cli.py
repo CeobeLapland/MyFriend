@@ -1,6 +1,7 @@
 """命令行入口。
 
-astra serve            启动 HTTP 服务
+astra serve            启动 HTTP 服务（默认以监督进程运行，支持"一键重启"）
+astra serve --no-supervisor   前台单进程运行（没有重启能力）
 astra migrate          应用数据库迁移（幂等）
 astra chat [--once X]  连上 WebSocket 聊天（REPL 或单轮）
 """
@@ -11,6 +12,7 @@ import argparse
 import asyncio
 import json
 import logging
+import os
 import sys
 from collections.abc import Sequence
 from typing import Any
@@ -24,6 +26,13 @@ from astra.domain.ids import new_id
 from astra.infrastructure.db.migrations import upgrade
 from astra.logging_setup import configure_logging
 from astra.settings import Settings, get_settings
+from astra.supervisor import (
+    EXIT_RESTART,
+    SUPERVISED_ENV,
+    child_command,
+    is_supervised,
+    run_supervised,
+)
 
 _logger = logging.getLogger("astra.cli")
 
@@ -40,7 +49,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--version", action="version", version=f"astra {__version__}")
 
     subparsers = parser.add_subparsers(dest="command", required=True)
-    subparsers.add_parser("serve", help="启动 HTTP 服务")
+    serve_parser = subparsers.add_parser("serve", help="启动 HTTP 服务（默认带重启监督）")
+    serve_parser.add_argument(
+        "--no-supervisor",
+        action="store_true",
+        help="前台单进程运行：没有'一键重启'能力（供脚本、或自己当监督者的桌面壳使用）",
+    )
     subparsers.add_parser("migrate", help="应用数据库迁移（幂等）")
 
     chat_parser = subparsers.add_parser("chat", help="连上 WebSocket 聊天")
@@ -53,7 +67,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _migrate(settings)
     if args.command == "chat":
         return _chat(settings, once=args.once)
-    return _serve(settings)
+    return _serve(settings, supervised=not args.no_supervisor)
 
 
 # ── serve / migrate ─────────────────────────────────────
@@ -75,19 +89,49 @@ def _migrate(settings: Settings) -> int:
     return 0
 
 
-def _serve(settings: Settings) -> int:
+def _serve(settings: Settings, *, supervised: bool = True) -> int:
+    """启动服务。**默认带监督**：子进程请求重启（退出码 75）时把它拉起来。
+
+    监督者的存在是 Studio"一键重启"的前提（ADR 0026 §1）；``--no-supervisor``
+    是逃生门，此时重启端点会如实返回 409。
+    """
     _setup_logging(settings)
 
-    # log_config=None：避免 uvicorn 自己再装一套 handler，导致格式不一致与重复输出
-    uvicorn.run(
-        "astra.main:app",
-        host=settings.http_host,
-        port=settings.http_port,
-        log_config=None,
-        ws_ping_interval=_WS_PING_INTERVAL_S,
-        ws_ping_timeout=_WS_PING_TIMEOUT_S,
+    if supervised:
+        return run_supervised(child_command(), {**os.environ, SUPERVISED_ENV: "1"})
+
+    return _serve_foreground(settings)
+
+
+def _serve_foreground(settings: Settings) -> int:
+    """真正跑 uvicorn 的进程。
+
+    **用显式的 ``Server`` 对象而不是 ``uvicorn.run``**：重启端点要把它 ``should_exit``
+    置位，这里再把"是不是重启请求"翻译成退出码（75 = 请重启我）。
+    """
+    # 延迟导入：应用在 import 时构造，放到日志配置之后
+    from astra.main import app
+
+    server = uvicorn.Server(
+        uvicorn.Config(
+            app,
+            host=settings.http_host,
+            port=settings.http_port,
+            # log_config=None：避免 uvicorn 自己再装一套 handler，导致格式不一致与重复输出
+            log_config=None,
+            ws_ping_interval=_WS_PING_INTERVAL_S,
+            ws_ping_timeout=_WS_PING_TIMEOUT_S,
+        )
     )
-    return 0
+
+    # 管理端点从 app.state 取这两样东西（只有 uvicorn 进程里有；测试里是缺省值）
+    app.state.uvicorn_server = server
+    app.state.supervised = is_supervised()
+    app.state.restart_requested = False
+
+    server.run()
+
+    return EXIT_RESTART if app.state.restart_requested else 0
 
 
 # ── chat ────────────────────────────────────────────────
