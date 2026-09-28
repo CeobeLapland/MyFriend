@@ -338,3 +338,70 @@ def test_start_new_does_not_touch_memories_or_state(
     # 两段会话都属于同一个 (user_id, companion_id)，所以记忆与状态的键没变
     assert first.user_id == second.user_id
     assert first.companion_id == second.companion_id
+
+
+# ── 删除（ADR 0029）─────────────────────────────────────
+
+
+def test_delete_removes_the_conversation_and_its_history(
+    service: ConversationService, repository: SQLiteConversationRepository
+) -> None:
+    first = _run(service.resolve_or_create(None)).conversation
+    _run(_say(service, first.id, turn_id="01T1"))
+
+    assert _run(service.delete(first.id)) is True
+    assert _run(repository.get(first.id)) is None
+    assert _run(repository.load_messages(first.id)) == ()
+
+
+def test_delete_unknown_conversation_returns_false(service: ConversationService) -> None:
+    """未知 id → False（路由转 404），不静默成功。"""
+    assert _run(service.delete("01MISSING")) is False
+
+
+def test_delete_refuses_another_users_conversation(
+    repository: SQLiteConversationRepository, clock: FakeClock
+) -> None:
+    _run(
+        repository.create(
+            Conversation(
+                id="01OTHER", user_id="someone-else", companion_id="astra", started_at=_BASE
+            )
+        )
+    )
+    service = ConversationService(
+        repository, user_id="local", companion_id="astra", idle_timeout=_IDLE, clock=clock
+    )
+
+    assert _run(service.delete("01OTHER")) is False
+    assert _run(repository.get("01OTHER")) is not None
+
+
+def test_delete_refuses_another_companions_conversation(
+    repository: SQLiteConversationRepository, clock: FakeClock
+) -> None:
+    """多人格时（ADR 0029），当前角色不能删别人的历史。"""
+    _run(
+        repository.create(
+            Conversation(id="01LUNA", user_id="local", companion_id="luna", started_at=_BASE)
+        )
+    )
+    service = ConversationService(
+        repository, user_id="local", companion_id="astra", idle_timeout=_IDLE, clock=clock
+    )
+
+    assert _run(service.delete("01LUNA")) is False
+    assert _run(repository.get("01LUNA")) is not None
+
+
+def test_deleting_the_active_conversation_makes_the_next_turn_start_a_new_one(
+    service: ConversationService,
+) -> None:
+    first = _run(service.resolve_or_create(None)).conversation
+    _run(_say(service, first.id, turn_id="01T1"))
+
+    _run(service.delete(first.id))
+    second = _run(service.resolve_or_create(None))
+
+    assert second.created is True
+    assert second.conversation.id != first.id

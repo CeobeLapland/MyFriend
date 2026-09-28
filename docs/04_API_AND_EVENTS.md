@@ -174,6 +174,17 @@ LLM 不可用时同样是 200，但 `status` 为 `failed`、`failure.code` 给�
 > 排序用 `id` 而不是 `created_at`：本机时钟分辨率只有 15.625ms，同一 turn 的
 > 两条消息时间戳完全相同。见 `decisions/0012-id-and-identity-model.md`。
 
+### DELETE /v1/conversations/{conversation_id}
+
+**真实删除**这段会话与它的全部消息（ADR 0029 追加），无响应体（204）。
+
+- 未知 / 不属于当前角色的会话返回 **404**——不静默成功。
+- 从这段会话里抽取出的**记忆不删**：记忆有自己的生命周期与删除入口
+  （`DELETE /v1/memories/{id}`），按会话级联删会把"记住了关于你的事"和
+  "那次聊天的原文"混为一谈。
+- 允许删当前 active 的会话；下一轮消息会自然地开一段新的。
+- Studio 的历史栏用它（带二次确认；该段会话正在跑 turn 时按钮禁用）。
+
 ### GET /v1/memories
 
 支持：
@@ -187,6 +198,13 @@ LLM 不可用时同样是 200，但 `status` 为 `failed`、`failure.code` 给�
 ### DELETE /v1/memories/{id}
 
 必须真正删除事实数据和向量索引。
+
+### 管理面（`/v1/admin/*`）
+
+Studio 的配置、重启、LM Studio 与人格管理走 `/v1/admin/*`（无条件挂载，
+见 `decisions/0026` / `decisions/0029`）——它们**不属于 Unity 客户端的协议**，
+本文件只记客户端要解析的部分。人格的增删改查与切换（`/v1/admin/personas`）
+的语义在 `decisions/0029-multi-persona-and-conversation-deletion.md`。
 
 ## 3. WebSocket
 

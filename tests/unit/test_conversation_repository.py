@@ -248,3 +248,38 @@ def test_naive_datetime_is_rejected(repository: SQLiteConversationRepository) ->
 
     with pytest.raises(ValueError, match="timezone-aware"):
         _run(repository.create(_conversation(started_at=naive)))
+
+
+# ── 删除（ADR 0029）─────────────────────────────────────
+
+
+def test_delete_removes_conversation_and_its_messages(
+    repository: SQLiteConversationRepository,
+) -> None:
+    """messages 没有外键，删除必须显式带上它们（0001_init.sql）。"""
+    _run(repository.create(_conversation()))
+    _run(repository.append_messages((_message("01A"), _message("01B", role=Role.ASSISTANT))))
+
+    removed = _run(repository.delete("01CONV"))
+
+    assert removed is True
+    assert _run(repository.get("01CONV")) is None
+    assert _run(repository.load_messages("01CONV")) == ()
+    assert _run(repository.find_active(user_id="local", companion_id="astra")) is None
+
+
+def test_delete_leaves_other_conversations_alone(repository: SQLiteConversationRepository) -> None:
+    _run(repository.create(_conversation("01A")))
+    _run(repository.create(_conversation("01B")))
+    _run(repository.append_messages((_message("01A1", conversation_id="01A"),)))
+    # turn_id 是幂等键的一部分（与 role 组合），两段会话的消息必须用不同的 turn
+    _run(repository.append_messages((_message("01B1", conversation_id="01B", turn_id="01T2"),)))
+
+    _run(repository.delete("01A"))
+
+    assert _run(repository.get("01B")) is not None
+    assert [message.id for message in _run(repository.load_messages("01B"))] == ["01B1"]
+
+
+def test_delete_missing_returns_false(repository: SQLiteConversationRepository) -> None:
+    assert _run(repository.delete("nope")) is False

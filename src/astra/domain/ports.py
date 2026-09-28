@@ -136,6 +136,14 @@ class ConversationRepository(Protocol):
         """把会话置为 ``ended``。"""
         ...
 
+    async def delete(self, conversation_id: str) -> bool:
+        """**真正删除**该会话及其全部消息（ADR 0029）。
+
+        ``messages`` 与 ``conversations`` 之间没有外键，所以实现必须显式删消息，
+        不能指望级联。返回该会话是否存在过。
+        """
+        ...
+
     async def last_message_at(self, conversation_id: str) -> datetime | None:
         """该会话最后一条消息的时间；空会话返回 ``None``。"""
         ...

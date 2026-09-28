@@ -55,6 +55,14 @@ class SQLiteConversationRepository:
     async def end(self, conversation_id: str, *, ended_at: datetime) -> None:
         await asyncio.to_thread(self._end_sync, conversation_id, ended_at)
 
+    async def delete(self, conversation_id: str) -> bool:
+        """真删会话与其全部消息（ADR 0029），同一事务。
+
+        ``messages`` 与 ``conversations`` 之间没有外键（``0001_init.sql``），
+        所以消息必须显式删——不能指望级联。
+        """
+        return await asyncio.to_thread(self._delete_sync, conversation_id)
+
     async def last_message_at(self, conversation_id: str) -> datetime | None:
         return await asyncio.to_thread(self._last_message_at_sync, conversation_id)
 
@@ -111,6 +119,20 @@ class SQLiteConversationRepository:
                 "UPDATE conversations SET status = ?, ended_at = ? WHERE id = ?",
                 (ConversationStatus.ENDED.value, _to_iso(ended_at), conversation_id),
             )
+
+    def _delete_sync(self, conversation_id: str) -> bool:
+        with open_connection(self._db_path) as conn:
+            conn.execute("BEGIN")
+            try:
+                conn.execute("DELETE FROM messages WHERE conversation_id = ?", (conversation_id,))
+                cursor = conn.execute("DELETE FROM conversations WHERE id = ?", (conversation_id,))
+                conn.execute("COMMIT")
+            except sqlite3.Error:
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
+                raise
+
+        return cursor.rowcount > 0
 
     def _list_summaries_sync(
         self, user_id: str, companion_id: str, limit: int

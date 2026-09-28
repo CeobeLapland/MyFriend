@@ -137,7 +137,9 @@ async def write_config(body: AdminConfigUpdateBody, request: Request) -> AdminCo
 
     settings: Settings = request.app.state.settings
     env_file, example_file = env_paths(request)
-    written, created = await asyncio.to_thread(_apply, env_file, example_file, body.values)
+    written, created = await asyncio.to_thread(
+        write_env_values, env_file, example_file, body.values
+    )
 
     file_values = dotenv_store.parse_values(await _read_text(env_file))
     return AdminConfigWriteBody(
@@ -262,8 +264,14 @@ def _coerce(kind: _ValueKind, raw: str) -> object:
 # ── 落盘（同步，跑在线程里）─────────────────────────────
 
 
-def _apply(env_file: Path, example_file: Path, values: Mapping[str, str]) -> tuple[list[str], bool]:
-    """读 → 改 → 校验 → 备份 → 落盘。返回 ``(写入的键, .env 是否这次新建)``。"""
+def write_env_values(
+    env_file: Path, example_file: Path, values: Mapping[str, str]
+) -> tuple[list[str], bool]:
+    """读 → 改 → 校验 → 备份 → 落盘。返回 ``(写入的键, .env 是否这次新建)``。
+
+    ADR 0029 起，人格页的"切换"（``/v1/admin/personas/{id}/activate``）与设置页
+    共用这一条落盘路径——两处必须走同一套校验与备份，否则会一边有护栏、一边没有。
+    """
     created = False
     if env_file.exists():
         text = env_file.read_text(encoding="utf-8")

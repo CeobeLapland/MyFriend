@@ -152,6 +152,25 @@ def test_clear_removes_everything(tmp_path: Path) -> None:
         assert client.get("/v1/memories").json()["total"] == 0
 
 
+def test_deleting_the_conversation_keeps_the_memories(tmp_path: Path) -> None:
+    """ADR 0029：会话删除只删消息。记忆有自己的生命周期与删除入口。"""
+    db_path = tmp_path / "astra.db"
+
+    with TestClient(
+        create_app(_settings(db_path), llm=_remembering_llm(), embeddings=_embedder())
+    ) as client:
+        _post_turn(client, _PREFERENCE_TURN)
+        conversation_id = client.get("/v1/conversations").json()["conversations"][0][
+            "conversation_id"
+        ]
+
+        assert client.delete(f"/v1/conversations/{conversation_id}").status_code == 204
+
+        stored = client.get("/v1/memories").json()
+        assert stored["total"] == 1
+        assert stored["memories"][0]["content"] == _PREFERENCE
+
+
 # ── 用户控制面（docs/06 §9）─────────────────────────────
 
 

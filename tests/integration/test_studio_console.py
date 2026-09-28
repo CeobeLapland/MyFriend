@@ -106,11 +106,12 @@ def test_studio_is_not_in_the_openapi_schema(studio_client: TestClient) -> None:
 
 
 def test_studio_has_all_phase_pages(studio_client: TestClient) -> None:
-    """页签：对话 / 记忆（阶段 1）+ 设置 / 模型 / 事件（阶段 2）+ 动画（阶段 3）。"""
+    """页签：对话 / 记忆 / 人格（ADR 0029）+ 设置 / 模型 / 事件 / 动画。"""
     body = studio_client.get("/studio").text
 
     assert 'data-page="chat"' in body
     assert 'data-page="memory"' in body
+    assert 'data-page="persona"' in body
     assert 'data-page="config"' in body
     assert 'data-page="models"' in body
     assert 'data-page="events"' in body
@@ -146,6 +147,10 @@ def test_studio_has_all_phase_pages(studio_client: TestClient) -> None:
         "/v1/admin/lmstudio/unload",
         # 阶段 3 的动画页（后端托管映射）
         "/v1/avatar/animation",
+        # 人格页（ADR 0029：列表 / 文档 / 新建保存删除 / 切换）
+        "/v1/admin/personas",
+        "/v1/admin/personas/{persona_id}",
+        "/v1/admin/personas/{persona_id}/activate",
     ],
 )
 def test_studio_backing_endpoints_exist(studio_client: TestClient, path: str) -> None:

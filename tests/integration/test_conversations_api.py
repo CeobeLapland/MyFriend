@@ -1,12 +1,14 @@
-"""``GET /v1/conversations`` 的集成测试（Studio 的历史栏靠它）。
+"""``/v1/conversations`` 的集成测试（Studio 的历史栏靠它）。
 
-在**真实 uvicorn** 上跑：开两段会话各聊一轮，再看列表的顺序、计数与摘要。
+在**真实 uvicorn** 上跑：开两段会话各聊一轮，再看列表的顺序、计数与摘要；
+ADR 0029 的删除也在这里验（真删消息、未知 id 404、删完还能继续聊）。
 """
 
 from __future__ import annotations
 
 import asyncio
 import json
+import urllib.error
 import urllib.request
 from typing import Any
 
@@ -102,3 +104,50 @@ def test_preview_flattens_and_truncates() -> None:
     long_preview = _preview("很长的一句话" * 60)
     assert len(long_preview) == 81  # 80 个字 + 省略号
     assert long_preview.endswith("…")
+
+
+# ── 删除（ADR 0029）─────────────────────────────────────
+
+
+def _request_status(url: str, method: str) -> int:
+    request = urllib.request.Request(url, method=method)  # noqa: S310 - 本机地址
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:  # noqa: S310 - 本机地址
+            return int(response.status)
+    except urllib.error.HTTPError as exc:
+        return int(exc.code)
+
+
+def test_delete_removes_the_conversation_and_its_messages(run_server) -> None:
+    server = run_server()
+    _send_text(server, "这段马上要被删掉")
+    conversation_id = _list(server)[0]["conversation_id"]
+
+    assert _request_status(f"{server.http_url}/v1/conversations/{conversation_id}", "DELETE") == 204
+
+    assert _list(server) == []
+    # **真删**：不是"结束"，历史也读不到了
+    assert (
+        _request_status(f"{server.http_url}/v1/conversations/{conversation_id}/messages", "GET")
+        == 404
+    )
+
+
+def test_delete_unknown_conversation_is_404(run_server) -> None:
+    server = run_server()
+
+    assert _request_status(f"{server.http_url}/v1/conversations/01MISSING", "DELETE") == 404
+
+
+def test_next_message_after_deleting_the_active_conversation_starts_a_new_one(run_server) -> None:
+    server = run_server()
+    _send_text(server, "第一段")
+    old_id = _list(server)[0]["conversation_id"]
+    assert _request_status(f"{server.http_url}/v1/conversations/{old_id}", "DELETE") == 204
+
+    _send_text(server, "删掉之后再说一句")
+
+    listing = _list(server)
+    assert len(listing) == 1
+    assert listing[0]["conversation_id"] != old_id
+    assert listing[0]["status"] == "active"

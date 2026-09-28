@@ -118,12 +118,19 @@
   .conv-pane-head button { margin-left: auto; padding: 2px 9px; font-size: 11px; }
   .conv-list { flex: 1; overflow-y: auto; min-height: 0; padding: 8px;
                display: flex; flex-direction: column; gap: 6px; }
-  .conv-item { text-align: left; padding: 8px 10px; border-radius: 10px; cursor: pointer;
+  .conv-row { position: relative; display: flex; }
+  .conv-item { flex: 1; text-align: left; padding: 8px 34px 8px 10px; border-radius: 10px; cursor: pointer;
                background: transparent; border: 1px solid transparent; color: var(--muted); }
   .conv-item:hover { background: var(--surface-2); color: var(--text); }
   .conv-item.active { background: var(--surface-2); border-color: var(--accent); color: var(--text); }
   .conv-item .when { font-family: var(--mono); font-size: 10px; opacity: .8; }
   .conv-item .what { margin-top: 3px; font-size: 12px; word-break: break-word; }
+  /* 删除按钮：常态可见（免得找不到），悬停才变色 */
+  .conv-del { position: absolute; top: 6px; right: 6px; padding: 1px 7px; font-size: 11px;
+              color: var(--muted); background: var(--surface-2); border-color: transparent;
+              opacity: .55; }
+  .conv-del:hover:enabled { color: #ff9e94; border-color: rgba(232, 87, 74, .45); opacity: 1; }
+  .conv-del:disabled { opacity: .2; cursor: default; }
   .chat-main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
   /* ── 语音 ───────────────────────────────── */
@@ -202,6 +209,31 @@
   .anime-slot { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 10px;
                 align-items: center; margin-top: 8px; font-size: 12px; color: var(--muted); }
 
+  /* ── 人格页 ─────────────────────────────── */
+  .persona-split { flex: 1; display: flex; min-height: 0; }
+  .persona-pane { flex: none; width: 240px; display: flex; flex-direction: column; min-height: 0;
+                  background: var(--surface); border-right: 1px solid var(--border); }
+  .persona-pane-head { padding: 10px 12px; font-size: 11px; color: var(--muted);
+                       letter-spacing: .06em; text-transform: uppercase;
+                       border-bottom: 1px solid var(--border); }
+  .persona-list { flex: 1; overflow-y: auto; min-height: 0; padding: 8px;
+                  display: flex; flex-direction: column; gap: 6px; }
+  .persona-item { text-align: left; padding: 8px 10px; border-radius: 10px; cursor: pointer;
+                  background: transparent; border: 1px solid transparent; color: var(--muted); }
+  .persona-item:hover { background: var(--surface-2); color: var(--text); }
+  .persona-item.active { background: var(--surface-2); border-color: var(--accent); color: var(--text); }
+  .persona-item .name { font-size: 13px; }
+  .persona-item .meta { margin-top: 2px; font-family: var(--mono); font-size: 10px; opacity: .8; }
+  .persona-item .badges { margin-top: 5px; display: flex; gap: 5px; flex-wrap: wrap; }
+  .persona-pane-actions { display: flex; gap: 8px; padding: 10px 12px;
+                          border-top: 1px solid var(--border); }
+  .persona-pane-actions button { flex: 1; padding: 5px 8px; font-size: 12px; }
+  .persona-editor { flex: 1; overflow-y: auto; min-height: 0; min-width: 0; padding: 4px 28px 28px; }
+  .persona-editor textarea { min-height: 96px; resize: vertical; font: inherit; }
+  .pe-trait { display: grid; grid-template-columns: minmax(0, 1fr) 90px 40px; gap: 8px;
+              align-items: center; margin-bottom: 6px; }
+  .pe-trait button { padding: 3px 8px; font-size: 12px; }
+
   /* ── 右栏 ───────────────────────────────── */
   .rail { display: flex; flex-direction: column; gap: 14px; overflow-y: auto;
           padding: 18px 18px 24px; background: var(--surface); border-left: 1px solid var(--border); }
@@ -261,6 +293,7 @@
     <nav class="menu">
       <button type="button" class="menu-item active" data-page="chat">对话</button>
       <button type="button" class="menu-item" data-page="memory">记忆</button>
+      <button type="button" class="menu-item" data-page="persona">人格</button>
       <button type="button" class="menu-item" data-page="config">设置</button>
       <button type="button" class="menu-item" data-page="models">模型</button>
       <button type="button" class="menu-item" data-page="events">事件</button>
@@ -327,6 +360,32 @@
         <button type="button" id="memory-refresh">刷新</button>
       </form>
       <div class="memory-list" id="memory-list"></div>
+    </section>
+
+    <section class="page" id="page-persona" hidden>
+      <header class="page-head">
+        <div>
+          <h1>人格</h1>
+          <p class="sub" id="persona-sub">—</p>
+        </div>
+        <div class="head-actions">
+          <button type="button" id="persona-reload">重新载入</button>
+          <button type="button" id="persona-new">新建…</button>
+          <button type="button" class="primary" id="persona-save">保存</button>
+        </div>
+      </header>
+      <div class="banner" id="persona-banner" hidden></div>
+      <div class="persona-split">
+        <aside class="persona-pane">
+          <div class="persona-pane-head">人格列表（每位一份 .toml）</div>
+          <div class="persona-list" id="persona-list"></div>
+          <div class="persona-pane-actions">
+            <button type="button" id="persona-activate">切换为这一位</button>
+            <button type="button" class="danger" id="persona-delete">删除</button>
+          </div>
+        </aside>
+        <div class="persona-editor" id="persona-editor"></div>
+      </div>
     </section>
 
     <section class="page" id="page-config" hidden>
@@ -467,6 +526,23 @@
   </form>
 </dialog>
 
+<dialog id="persona-new-dialog">
+  <form class="dialog-body" id="persona-new-form">
+    <h3>新建一个人格</h3>
+    <label>id（小写字母开头，会变成文件名与角色标识）
+      <input type="text" id="persona-new-id" placeholder="luna" autocomplete="off">
+    </label>
+    <label>显示名（界面里叫她什么）
+      <input type="text" id="persona-new-name" placeholder="Luna" autocomplete="off">
+    </label>
+    <p class="dialog-error" id="persona-new-error"></p>
+    <div class="dialog-actions">
+      <button type="button" id="persona-new-cancel">取消</button>
+      <button type="submit" class="primary">创建</button>
+    </div>
+  </form>
+</dialog>
+
 <dialog id="memory-edit">
   <form class="dialog-body" id="memory-edit-form">
     <h3>编辑记忆</h3>
@@ -558,6 +634,11 @@ const app = {
   lmstudio: null,
   events: [],
   anime: { actions: [], raw: null },
+  //: 人格页（ADR 0029）：列表 + 运行中 / 待启用 + 当前选中的那份文档
+  personas: {
+    list: [], directory: "", runningId: null, pendingId: null, supervised: false,
+    selected: null, document: null, dirty: false,
+  },
   voice: {
     // 采集
     mic: null,
@@ -644,11 +725,13 @@ function showPage(name) {
   el("page-models").hidden = name !== "models";
   el("page-events").hidden = name !== "events";
   el("page-anime").hidden = name !== "anime";
+  el("page-persona").hidden = name !== "persona";
   if (name === "memory") loadMemories().catch(() => {});
   if (name === "config") loadAdminConfig().catch(reportConfigError);
   if (name === "models") loadLmStudio().catch(reportModelsError);
   if (name === "events") renderEvents();
   if (name === "anime") loadAnime().catch(reportAnimeError);
+  if (name === "persona") loadPersonas().catch(reportPersonaError);
 }
 
 function setConnection(kind, text) {
@@ -1308,6 +1391,8 @@ function renderConversations() {
 
   for (const item of app.conversations) {
     const active = item.conversation_id === app.conversationId;
+    const row = node("div", "conv-row");
+
     const button = node("button", "conv-item" + (active ? " active" : ""));
     button.type = "button";
     button.appendChild(node("div", "when",
@@ -1318,7 +1403,22 @@ function renderConversations() {
     button.addEventListener("click", () => {
       openConversation(item).catch((error) => createBubble("system", "打开会话失败：" + error.message));
     });
-    box.appendChild(button);
+    row.appendChild(button);
+
+    const remove = node("button", "conv-del", "删");
+    remove.type = "button";
+    remove.title = "删除这段会话（真实删除，不可恢复）";
+    // 当前会话正在跑 turn 时不许删：那一轮落库会把消息写进已删的会话（ADR 0029）
+    if (active && app.turnBubbles.size > 0) {
+      remove.disabled = true;
+      remove.title = "这一轮还在跑——等她说完再删";
+    }
+    remove.addEventListener("click", () => {
+      deleteConversation(item).catch((error) => createBubble("system", "删除会话失败：" + error.message));
+    });
+    row.appendChild(remove);
+
+    box.appendChild(row);
   }
 }
 
@@ -1342,6 +1442,31 @@ async function openConversation(item) {
     // 端到端契约：已结束的会话不接受新消息（ADR 0012）——先把话说在前面
     createBubble("system", "这段会话已经结束（只读）。历史还在，但接着聊要开新的一段——点右上角「新会话」。");
   }
+}
+
+async function deleteConversation(item) {
+  const preview = item.last_message_preview || "（还没有消息）";
+  const confirmed = window.confirm(
+    "删除这段会话？\n\n" + preview + "\n\n真实删除它和全部消息，不可恢复。\n"
+    + "（从它里面记住的事不受影响，仍可在记忆页单独删。）"
+  );
+  if (!confirmed) return;
+
+  await fetchJson("/v1/conversations/" + encodeURIComponent(item.conversation_id),
+    { method: "DELETE" }, HEALTH_TIMEOUT_MS);
+
+  if (item.conversation_id === app.conversationId) {
+    // 删掉的就是当前这一段：本地引用一起清掉，下一次发送会自动开新的一段
+    app.conversationId = null;
+    app.conversationStatus = null;
+    writeStored(STORE_KEY, "");
+    app.unclaimed.length = 0;
+    app.turnBubbles.clear();
+    el("chat").replaceChildren();
+    el("conversation-label").textContent = "已删除当前会话";
+    createBubble("system", "这段会话已删除（消息一起没了）。发消息会开新的一段。");
+  }
+  await loadConversations();
 }
 
 /* ── 会话与历史 ───────────────────────────────────────── */
@@ -1744,9 +1869,15 @@ async function waitForBackend(attempts) {
   return false;
 }
 
+//: 后端是不是监督模式。设置页与人格页各自问过同一件事——谁先加载就用谁的结果
+function backendSupervised() {
+  return Boolean((app.adminConfig && app.adminConfig.supervised)
+    || (app.personas && app.personas.supervised));
+}
+
 async function restartBackend() {
   if (app.restarting) return;
-  if (!app.adminConfig || !app.adminConfig.supervised) {
+  if (!backendSupervised()) {
     createBubble("system", "这个后端不是监督模式，重启按钮不可用。");
     return;
   }
@@ -2199,6 +2330,424 @@ async function saveAnime() {
   await loadAnime();
 }
 
+/* ── 人格页（ADR 0029）────────────────────────────────── */
+
+function reportPersonaError(error) {
+  personaNote("danger", "人格页出错：" + String((error && error.message) || error));
+}
+
+function personaNote(kind, text) {
+  const banner = el("persona-banner");
+  banner.replaceChildren(node("p", "note " + kind, text));
+  banner.hidden = false;
+}
+
+function clearPersonaBanner() {
+  el("persona-banner").hidden = true;
+}
+
+function personaEntry(personaId) {
+  return app.personas.list.find((item) => item.id === personaId) || null;
+}
+
+function markPersonaDirty() {
+  app.personas.dirty = true;
+}
+
+function peField(controlId, labelText) {
+  const row = node("div", "cfg-row");
+  row.appendChild(node("span", "cfg-label", labelText));
+  const control = node("input");
+  control.type = "text";
+  control.id = controlId;
+  control.autocomplete = "off";
+  control.addEventListener("input", markPersonaDirty);
+  row.appendChild(control);
+  return row;
+}
+
+function peTextarea(controlId, labelText) {
+  const row = node("div", "cfg-row");
+  row.appendChild(node("span", "cfg-label", labelText));
+  const area = node("textarea");
+  area.id = controlId;
+  area.spellcheck = false;
+  area.rows = 6;
+  area.addEventListener("input", markPersonaDirty);
+  row.appendChild(area);
+  return row;
+}
+
+function addTraitRow(name, value) {
+  const row = node("div", "pe-trait");
+  const key = node("input", "pe-trait-key");
+  key.type = "text";
+  key.value = name;
+  key.placeholder = "trait 名（英文，例如 curious）";
+  key.addEventListener("input", markPersonaDirty);
+
+  const amount = node("input", "pe-trait-value");
+  amount.type = "number";
+  amount.min = "0";
+  amount.max = "1";
+  amount.step = "0.01";
+  amount.value = String(value);
+  amount.addEventListener("input", markPersonaDirty);
+
+  const remove = node("button", null, "删");
+  remove.type = "button";
+  remove.title = "删掉这条 trait";
+  remove.addEventListener("click", () => { row.remove(); markPersonaDirty(); });
+
+  row.append(key, amount, remove);
+  el("pe-traits").appendChild(row);
+}
+
+/* 编辑器只建一次，之后靠填值复用——重建会丢焦点 */
+function buildPersonaEditor() {
+  const box = el("persona-editor");
+  box.replaceChildren();
+
+  const identity = node("section", "cfg-group");
+  identity.appendChild(node("h2", null, "身份（Layer 1）"));
+  identity.appendChild(peField("pe-name", "name（英文标识）"));
+  identity.appendChild(peField("pe-display", "display_name（界面显示名）"));
+  identity.appendChild(peField("pe-pronouns", "pronouns（人称 / 自称）"));
+  identity.appendChild(peField("pe-version", "version"));
+  identity.appendChild(peTextarea("pe-self", "self_description（她是谁，会进 prompt）"));
+  identity.appendChild(peTextarea("pe-backstory", "backstory（背景，留空 = 不写）"));
+  box.appendChild(identity);
+
+  const traits = node("section", "cfg-group");
+  traits.appendChild(node("h2", null, "性格倾向（Layer 2 · 0–1 的数值，越高越明显）"));
+  const rows = node("div");
+  rows.id = "pe-traits";
+  traits.appendChild(rows);
+  const addTrait = node("button", null, "+ 添加一条");
+  addTrait.type = "button";
+  addTrait.addEventListener("click", () => { addTraitRow("", 0.5); markPersonaDirty(); });
+  traits.appendChild(addTrait);
+  box.appendChild(traits);
+
+  const style = node("section", "cfg-group");
+  style.appendChild(node("h2", null, "说话风格（Layer 3）"));
+  style.appendChild(peField("pe-language", "language（例如 zh-CN）"));
+  style.appendChild(peField("pe-sentence", "sentence_length"));
+  style.appendChild(peField("pe-emoji", "emoji_frequency"));
+  style.appendChild(peField("pe-rhetorical", "rhetorical_questions"));
+  style.appendChild(peField("pe-interaction", "preferred_interaction"));
+  box.appendChild(style);
+
+  const behavior = node("section", "cfg-group");
+  behavior.appendChild(node("h2", null, "行为规则（behavior.rules · 一行一条）"));
+  behavior.appendChild(peTextarea("pe-rules", "她该怎么做、不该怎么做"));
+  box.appendChild(behavior);
+
+  const prompt = node("section", "cfg-group");
+  prompt.appendChild(node("h2", null, "硬约束（prompt.hard_constraints · 一行一条）"));
+  prompt.appendChild(peTextarea("pe-constraints", "追加到 Layer 0 的角色特有约束"));
+  box.appendChild(prompt);
+
+  const errors = node("section", "cfg-group");
+  errors.appendChild(node("h2", null, "降级话术（errors）"));
+  errors.appendChild(peField("pe-llm-unavailable", "llm_unavailable（模型连不上时说什么；留空 = 用内置文案）"));
+  box.appendChild(errors);
+
+  box.appendChild(node("p", "cfg-hint",
+    "保存会重写整份 TOML（原注释不保留，旧文件留成 <id>.toml.bak）。"
+    + "保存与切换都要重启后端才生效——人格是在启动时装配的。"));
+}
+
+function fillPersonaEditor(document) {
+  const identity = document.identity || {};
+  el("pe-name").value = identity.name || "";
+  el("pe-display").value = identity.display_name || "";
+  el("pe-pronouns").value = identity.pronouns || "";
+  el("pe-version").value = identity.version || "1";
+  el("pe-self").value = identity.self_description || "";
+  el("pe-backstory").value = identity.backstory || "";
+
+  el("pe-traits").replaceChildren();
+  const traits = document.traits || {};
+  for (const name of Object.keys(traits)) addTraitRow(name, traits[name]);
+
+  const communication = document.communication || {};
+  el("pe-language").value = communication.language || "zh-CN";
+  el("pe-sentence").value = communication.sentence_length || "";
+  el("pe-emoji").value = communication.emoji_frequency || "";
+  el("pe-rhetorical").value = communication.rhetorical_questions || "";
+  el("pe-interaction").value = communication.preferred_interaction || "";
+
+  el("pe-rules").value = ((document.behavior || {}).rules || []).join("\n");
+  el("pe-constraints").value = ((document.prompt || {}).hard_constraints || []).join("\n");
+  el("pe-llm-unavailable").value = ((document.errors || {}).llm_unavailable) || "";
+}
+
+function readPersonaEditor() {
+  const traits = {};
+  for (const row of el("pe-traits").querySelectorAll(".pe-trait")) {
+    const name = row.querySelector(".pe-trait-key").value.trim();
+    if (!name) continue;
+    const raw = row.querySelector(".pe-trait-value").value.trim();
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value < 0 || value > 1) {
+      throw new Error("trait「" + name + "」的值要在 0 与 1 之间（现在是 " + (raw || "空") + "）。");
+    }
+    traits[name] = value;
+  }
+
+  const lines = (controlId) => el(controlId).value.split("\n")
+    .map((line) => line.trim()).filter((line) => line.length > 0);
+  const backstory = el("pe-backstory").value.trim();
+
+  return {
+    identity: {
+      name: el("pe-name").value.trim(),
+      display_name: el("pe-display").value.trim(),
+      pronouns: el("pe-pronouns").value.trim(),
+      version: el("pe-version").value.trim() || "1",
+      self_description: el("pe-self").value.trim(),
+      backstory: backstory ? backstory : null,
+    },
+    traits: traits,
+    communication: {
+      language: el("pe-language").value.trim() || "zh-CN",
+      sentence_length: el("pe-sentence").value.trim(),
+      emoji_frequency: el("pe-emoji").value.trim(),
+      rhetorical_questions: el("pe-rhetorical").value.trim(),
+      preferred_interaction: el("pe-interaction").value.trim(),
+    },
+    behavior: { rules: lines("pe-rules") },
+    prompt: { hard_constraints: lines("pe-constraints") },
+    errors: { llm_unavailable: el("pe-llm-unavailable").value.trim() || null },
+  };
+}
+
+function renderPersonaList() {
+  const box = el("persona-list");
+  box.replaceChildren();
+
+  if (app.personas.list.length === 0) {
+    box.appendChild(node("p", "notice", "人格目录里还没有 .toml 文件。"));
+  }
+
+  for (const item of app.personas.list) {
+    const button = node("button", "persona-item"
+      + (item.id === app.personas.selected ? " active" : ""));
+    button.type = "button";
+    button.appendChild(node("div", "name", item.display_name || item.id));
+    button.appendChild(node("div", "meta", item.id));
+    const badges = node("div", "badges");
+    if (item.is_running) badges.appendChild(node("span", "badge", "使用中"));
+    if (item.is_pending) badges.appendChild(node("span", "badge warn", "重启后启用"));
+    if (item.error) badges.appendChild(node("span", "badge warn", "文件坏了"));
+    button.appendChild(badges);
+    button.addEventListener("click", () => {
+      selectPersona(item.id).catch(reportPersonaError);
+    });
+    box.appendChild(button);
+  }
+
+  syncPersonaButtons();
+}
+
+function syncPersonaButtons() {
+  const entry = personaEntry(app.personas.selected);
+  const broken = Boolean(entry && entry.error);
+  el("persona-save").disabled = !entry || broken;
+  el("persona-activate").disabled = !entry || broken || entry.is_running;
+  el("persona-activate").title = entry && entry.is_running ? "已经是这一位在说话了" : "";
+  el("persona-delete").disabled = !entry;
+}
+
+async function loadPersonas() {
+  const page = await fetchJson("/v1/admin/personas", null, 15000);
+  app.personas.list = page.personas || [];
+  app.personas.directory = page.directory || "";
+  app.personas.runningId = page.running_id || null;
+  app.personas.pendingId = page.pending_id || null;
+  app.personas.supervised = Boolean(page.supervised);
+
+  el("persona-sub").textContent = "目录 " + app.personas.directory
+    + (app.personas.runningId ? " · 运行中：" + app.personas.runningId : "")
+    + (app.personas.pendingId && app.personas.pendingId !== app.personas.runningId
+      ? " · 重启后切换为：" + app.personas.pendingId : "");
+
+  renderPersonaList();
+
+  const ids = app.personas.list.map((item) => item.id);
+  if (ids.indexOf(app.personas.selected) < 0) {
+    app.personas.selected = ids.indexOf(app.personas.runningId) >= 0
+      ? app.personas.runningId : (ids[0] || null);
+  }
+  if (app.personas.selected) {
+    await selectPersona(app.personas.selected);
+  } else {
+    app.personas.document = null;
+    buildPersonaEditor();
+  }
+}
+
+async function selectPersona(personaId) {
+  if (app.personas.selected && personaId !== app.personas.selected && app.personas.dirty) {
+    const leave = window.confirm("切换过去会丢掉当前没保存的修改。继续？");
+    if (!leave) return;
+  }
+  clearPersonaBanner();
+  app.personas.selected = personaId;
+  renderPersonaList();
+
+  const entry = personaEntry(personaId);
+  if (entry && entry.error) {
+    // 坏文件：如实说清坏在哪，编辑器留空——不让它看起来"可编辑"
+    personaNote("danger", "这一位的文件读不出来：" + entry.error);
+    app.personas.document = null;
+    buildPersonaEditor();
+    return;
+  }
+
+  const body = await fetchJson("/v1/admin/personas/" + encodeURIComponent(personaId), null, 15000);
+  app.personas.document = body.document;
+  fillPersonaEditor(body.document);
+  app.personas.dirty = false;
+}
+
+function newPersonaTemplate(displayName) {
+  return {
+    identity: {
+      name: displayName,
+      display_name: displayName,
+      pronouns: "她",
+      version: "1",
+      self_description: "（这个角色是谁：一段自我介绍，会进她的 prompt）",
+      backstory: null,
+    },
+    traits: {},
+    communication: {
+      language: "zh-CN",
+      sentence_length: "short_to_medium",
+      emoji_frequency: "low",
+      rhetorical_questions: "occasional",
+      preferred_interaction: "conversational",
+    },
+    behavior: { rules: [] },
+    prompt: { hard_constraints: [] },
+    errors: { llm_unavailable: null },
+  };
+}
+
+async function createPersona() {
+  const personaId = el("persona-new-id").value.trim();
+  const displayName = el("persona-new-name").value.trim() || personaId;
+  if (!personaId) {
+    el("persona-new-error").textContent = "先给一个 id。";
+    return;
+  }
+
+  const body = await fetchJson("/v1/admin/personas", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id: personaId, persona: newPersonaTemplate(displayName) }),
+  }, 20000);
+
+  el("persona-new-dialog").close();
+  app.personas.selected = body.id;
+  app.personas.dirty = false;
+  await loadPersonas();
+  personaNote("ok", "已创建 " + body.path + "。改好点「保存」，再点「切换为这一位」。");
+}
+
+async function savePersona() {
+  const personaId = app.personas.selected;
+  if (!personaId) return;
+
+  let document;
+  try {
+    document = readPersonaEditor();
+  } catch (error) {
+    personaNote("danger", String((error && error.message) || error));
+    return;
+  }
+
+  const body = await fetchJson("/v1/admin/personas/" + encodeURIComponent(personaId), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ persona: document }),
+  }, 20000);
+
+  app.personas.document = body.document;
+  app.personas.dirty = false;
+  await loadPersonas();
+  personaNote("ok", "已保存 " + body.path + "（旧文件留成 .bak）。重启后生效。");
+}
+
+async function activatePersona() {
+  const personaId = app.personas.selected;
+  if (!personaId) return;
+  const previousRunning = app.personas.runningId;
+
+  const result = await fetchJson(
+    "/v1/admin/personas/" + encodeURIComponent(personaId) + "/activate",
+    { method: "POST" }, 20000,
+  );
+
+  if (!result.supervised) {
+    await loadPersonas();
+    personaNote("warn", "已把 " + personaId + " 写进 " + result.env_file
+      + "。这个后端不是监督模式——手动重启（`uv run astra serve`）之后才生效。");
+    return;
+  }
+
+  await loadPersonas();
+  const confirmed = window.confirm("已把「" + personaId + "」设为下次启动的人格。\n\n"
+    + "现在重启后端吗？（在跑的这一轮会中断）");
+  if (!confirmed) {
+    personaNote("warn", "已写入 .env，还没有重启——重启之后才生效。");
+    return;
+  }
+
+  await restartBackend();
+  await loadPersonas();
+
+  if (app.personas.runningId && app.personas.runningId !== previousRunning) {
+    // 真的换了一位：当前那段会话属于旧角色，本地引用要清掉（历史与记忆都换了一套）
+    app.conversationId = null;
+    app.conversationStatus = null;
+    writeStored(STORE_KEY, "");
+    app.unclaimed.length = 0;
+    app.turnBubbles.clear();
+    el("chat").replaceChildren();
+    el("conversation-label").textContent = "已切换到 " + app.personas.runningId;
+    createBubble("system", "现在是「" + app.personas.runningId
+      + "」在说话。左边那一栏是这一位的会话，记忆页也是她的记忆。");
+    loadConversations().catch(() => {});
+    loadMemories().catch(() => {});
+    loadState().catch(() => {});
+  }
+  personaNote("ok", "运行中：" + (app.personas.runningId || "—"));
+}
+
+async function deletePersona() {
+  const personaId = app.personas.selected;
+  const entry = personaEntry(personaId);
+  if (!entry) return;
+
+  const confirmed = window.confirm(
+    "删除人格「" + (entry.display_name || personaId) + "」？\n\n"
+    + "只删 " + entry.path + " 这个文件。\n"
+    + "这一位的对话历史、记忆与情绪状态都还在数据库里——用同名 id 建回来就能接着用。"
+  );
+  if (!confirmed) return;
+
+  await fetchJson("/v1/admin/personas/" + encodeURIComponent(personaId),
+    { method: "DELETE" }, 15000);
+
+  app.personas.selected = null;
+  app.personas.dirty = false;
+  await loadPersonas();
+  personaNote("ok", "已删除 " + personaId + ".toml（它的对话与记忆仍在数据库里）。");
+}
+
 /* ── 事件绑定 ─────────────────────────────────────────── */
 
 for (const item of document.querySelectorAll(".menu-item")) {
@@ -2368,6 +2917,32 @@ el("anime-paste-form").addEventListener("submit", (event) => {
   createBubble("system", "已把粘贴的映射载入动画页——确认无误后点「保存到后端」。");
 });
 
+/* ── 人格页的事件绑定 ─────────────────────────────────── */
+
+el("persona-reload").addEventListener("click", () => { loadPersonas().catch(reportPersonaError); });
+
+el("persona-save").addEventListener("click", () => { savePersona().catch(reportPersonaError); });
+
+el("persona-activate").addEventListener("click", () => { activatePersona().catch(reportPersonaError); });
+
+el("persona-delete").addEventListener("click", () => { deletePersona().catch(reportPersonaError); });
+
+el("persona-new").addEventListener("click", () => {
+  el("persona-new-id").value = "";
+  el("persona-new-name").value = "";
+  el("persona-new-error").textContent = "";
+  el("persona-new-dialog").showModal();
+});
+
+el("persona-new-cancel").addEventListener("click", () => el("persona-new-dialog").close());
+
+el("persona-new-form").addEventListener("submit", (event) => {
+  event.preventDefault();
+  createPersona().catch((error) => {
+    el("persona-new-error").textContent = "创建失败：" + error.message;
+  });
+});
+
 /* ── 启动 ─────────────────────────────────────────────── */
 
 app.sessionId = newUlid();
@@ -2376,6 +2951,7 @@ app.voice.preview = readStored(PREVIEW_KEY) !== "0";   // 默认开
 el("voice-preview").checked = app.voice.preview;
 renderAvatarTags();
 syncVoiceAvailability();
+buildPersonaEditor();   // 编辑器先建好，打开人格页时只填值
 connect();
 refreshHealth();
 loadState();

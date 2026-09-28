@@ -163,3 +163,20 @@ LLM requests tool
 ```
 
 禁止 LLM 自称完成了未执行的工具。
+
+## 10. 多个人格（实现说明）
+
+一个人格 = 人格目录下的一个 `<id>.toml`（默认目录 `./personas/`，即
+`ASTRA_PERSONA_PATH` 的父目录）。**id 同时就是 `companion_id`**：会话历史、记忆、
+情绪 / 关系状态都按 `companion_id` 归档，所以"换一位来聊"天然就是"换一套历史与记忆"。
+
+- **管理入口**：Studio 的「人格」页（列表 / 新建 / 编辑 / 删除 / 切换）。
+  编辑覆盖本文 §2 / §3 的全部字段（identity / traits / communication /
+  behavior.rules / prompt.hard_constraints / errors）。
+- **生效方式**：切换写 `.env` 的 `ASTRA_COMPANION_ID` 与 `ASTRA_PERSONA_PATH`，
+  **重启后生效**；保存人格文件同样要重启（人格在启动时装配，见 `decisions/0015`）。
+- **保存会重写整份 TOML**：格式统一、**原注释不保留**（旧文件留成 `<id>.toml.bak`）。
+  需要保留注释就直接手编文件——加载时用的是同一套校验。
+- **删除只删文件**：该 id 名下的会话 / 记忆 / 状态仍在数据库里，用同名 id 建回来
+  就能接着用；删数据要走记忆页与历史栏那些显式入口。
+- 完整决策与理由见 `decisions/0029-multi-persona-and-conversation-deletion.md`。

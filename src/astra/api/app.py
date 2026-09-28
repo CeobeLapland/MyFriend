@@ -20,6 +20,7 @@ from astra import __version__
 from astra.api.connection_manager import ConnectionManager
 from astra.api.routes.admin_config import router as admin_config_router
 from astra.api.routes.admin_lmstudio import router as admin_lmstudio_router
+from astra.api.routes.admin_personas import router as admin_personas_router
 from astra.api.routes.admin_system import router as admin_system_router
 from astra.api.routes.avatar import router as avatar_router
 from astra.api.routes.chat import router as chat_router
@@ -126,6 +127,8 @@ def create_app(
     app.include_router(admin_config_router)
     app.include_router(admin_system_router)
     app.include_router(admin_lmstudio_router)
+    # 人格的增删改查与切换（ADR 0029）——同属管理面，同样无条件挂载
+    app.include_router(admin_personas_router)
     # 动画映射的权威副本（Unity 从它拉、Studio 编辑它）——与 Studio 一样无条件挂载
     app.include_router(avatar_router)
 

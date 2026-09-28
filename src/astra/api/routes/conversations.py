@@ -1,4 +1,4 @@
-"""``/v1/conversations`` —— 读历史与开新会话。
+"""``/v1/conversations`` —— 读历史、开新会话与删除会话。
 
 ``GET /{id}/messages`` 的用途：验证"重启后历史还在"
 （`docs/10_TESTING_AND_ACCEPTANCE.md` §4）。
@@ -7,9 +7,9 @@
 没有它的话，一段被写坏的历史只能靠 60 分钟空闲超时才能脱身——
 实测踩到过模型照抄历史里堆叠的降级回复。
 
-未知会话由 ``ConversationService.load_history`` 抛
-:class:`~astra.domain.errors.ConversationNotFoundError`，再由 ``app.py`` 注册的
-全局处理器统一转成 **404**——这是客户端的 bug 或被删的数据，不该静默返回空列表。
+``DELETE /{id}``（ADR 0029）：**真删**该会话与其全部消息（历史栏里的「删」）。
+不删派生的记忆；未知会话由全局处理器统一转成 **404**——这是客户端的 bug 或
+被删的数据，不该静默返回成功。
 """
 
 from __future__ import annotations
@@ -27,6 +27,7 @@ from astra.api.schemas import (
     MessageBody,
 )
 from astra.application.conversation_service import ConversationService
+from astra.domain.errors import ConversationNotFoundError
 
 router = APIRouter(prefix="/v1/conversations", tags=["conversations"])
 
@@ -87,6 +88,22 @@ async def list_conversations(
             for summary in summaries
         ]
     )
+
+
+@router.delete(
+    "/{conversation_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="删除一段会话及其全部消息（真实删除，不可恢复）",
+)
+async def delete_conversation(conversation_id: str, conversations: ConversationsDep) -> None:
+    """**真删**该会话与其消息（ADR 0029）。
+
+    不删从这段会话里抽取出的记忆——记忆有自己的生命周期与删除入口。
+    未知 / 不属于当前角色的会话 → 404（``ConversationNotFoundError`` 由 app 的
+    全局处理器统一成标准错误体），不静默成功。
+    """
+    if not await conversations.delete(conversation_id):
+        raise ConversationNotFoundError(f"conversation not found: {conversation_id}")
 
 
 def _preview(content: str) -> str:

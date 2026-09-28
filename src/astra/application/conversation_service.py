@@ -144,6 +144,25 @@ class ConversationService:
 
         return await self._repository.load_messages(conversation_id)
 
+    async def delete(self, conversation_id: str) -> bool:
+        """**真正删除**一段会话及其全部消息（ADR 0029）。返回是否存在过。
+
+        归属检查与 :meth:`load_history` 同一约定：不存在 / 不属于当前
+        ``(user_id, companion_id)`` → ``False``（路由转 404），不静默成功。
+
+        **允许删 active 会话**：下一轮 ``resolve_or_create`` 找不到 active 会新建一段。
+        从这段会话里抽取出的记忆**不删**——记忆有自己的生命周期与删除入口。
+        """
+        conversation = await self._repository.get(conversation_id)
+        if (
+            conversation is None
+            or conversation.user_id != self._user_id
+            or conversation.companion_id != self._companion_id
+        ):
+            return False
+
+        return await self._repository.delete(conversation_id)
+
     async def append_turn(
         self,
         *,
