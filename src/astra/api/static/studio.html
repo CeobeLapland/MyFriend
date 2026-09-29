@@ -47,12 +47,15 @@
   input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); }
   ::placeholder { color: #616a7c; }
 
-  .app { display: grid; grid-template-columns: 206px minmax(0, 1fr) 320px; height: 100vh; }
+  /* 两列：左栏（导航 + 组件/角色状态卡，可滚动）| 主区。
+   状态卡从右栏挪到这里、角色区搬到对话页里——16:9 的角色画面塞不进 320px 的竖条
+   （实测教训，见 ADR 0031 的布局回填）。 */
+  .app { display: grid; grid-template-columns: 236px minmax(0, 1fr); height: 100vh; }
 
   /* ── 左栏 ───────────────────────────────── */
-  .nav { display: flex; flex-direction: column; gap: 24px; padding: 20px 14px;
-         background: var(--surface); border-right: 1px solid var(--border);
-         overflow-y: auto; }
+  .side { display: flex; flex-direction: column; gap: 14px; padding: 16px 12px;
+          background: var(--surface); border-right: 1px solid var(--border);
+          overflow-y: auto; min-height: 0; }
   .brand { display: flex; align-items: center; gap: 10px; padding: 0 8px; font-size: 16px; font-weight: 600; }
   .logo { width: 9px; height: 9px; border-radius: 50%; background: var(--accent);
           box-shadow: 0 0 14px rgba(92, 245, 168, .75); }
@@ -62,10 +65,17 @@
   .menu-item:hover { background: var(--surface-2); color: var(--text); }
   .menu-item.active { background: var(--surface-2); border-color: var(--border);
                       color: var(--text); font-weight: 600; }
-  .nav-foot { margin-top: auto; display: flex; flex-direction: column; gap: 7px;
-              padding: 0 8px; font-size: 11px; color: var(--muted); }
+  .side-conn { display: flex; flex-direction: column; gap: 6px;
+               padding: 0 8px; font-size: 11px; color: var(--muted); }
   .conn { display: flex; align-items: center; gap: 7px; }
-  .nav-foot .sid { font-family: var(--mono); opacity: .65; word-break: break-all; }
+  .side-conn .sid { font-family: var(--mono); opacity: .65; word-break: break-all; }
+  /* 状态卡：窄列里要收着点，横条与条形图都压缩过 */
+  .side-cards { display: flex; flex-direction: column; gap: 10px; }
+  .side-cards .card { padding: 11px 12px; }
+  .side-cards .chip { font-size: 11px; gap: 6px; }
+  .side-cards .chip .name { min-width: 56px; }
+  .side-cards .bar-row { grid-template-columns: 50px 1fr 28px; gap: 7px; font-size: 11px; }
+  .side-cards .state-heading { font-size: 10px; margin-bottom: 5px; }
 
   /* ── 中栏 ───────────────────────────────── */
   /* min-height: 0 是**必须的**：grid 子项的 min-height 默认是 auto（= 内容高度），
@@ -85,7 +95,7 @@
 
   /* ── 对话 ───────────────────────────────── */
   .chat { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 14px;
-          padding: 22px 28px 10px; min-height: 0; }
+          padding: 4px 8px 10px; min-height: 0; }
   .msg { display: flex; flex-direction: column; gap: 5px; max-width: min(680px, 88%); }
   .msg.user { align-self: flex-end; align-items: flex-end; }
   .msg.assistant, .msg.failed { align-self: flex-start; }
@@ -105,37 +115,50 @@
   .tag.accent { color: var(--accent); border-color: rgba(92, 245, 168, .32); }
   .tag.warn { color: var(--warn); border-color: rgba(239, 170, 23, .38); }
   .notice { align-self: center; max-width: 88%; text-align: center; font-size: 12px; color: var(--muted); }
-  .composer { display: flex; gap: 10px; padding: 12px 28px 20px; }
+  .composer { display: flex; gap: 10px; padding: 12px 8px 10px; }
   .composer input { flex: 1; border-radius: 12px; padding: 11px 14px; }
 
-  /* ── 对话区 / 会话栏 ────────────────────── */
-  .chat-split { flex: 1; display: flex; min-height: 0; }
-  .conv-pane { flex: none; width: 216px; display: flex; flex-direction: column; min-height: 0;
-               background: var(--surface); border-right: 1px solid var(--border); }
-  .conv-pane-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px;
+  /* ── 对话页的四象限（ADR 0031 的布局回填）─────
+     上：左聊天（窄）+ 右角色区（16:9，占满可用高度）；下：横向滚动的历史带。
+     角色区是**真 HWND**（Unity 子窗口），HTML 画不到它上面——所以它独占一块矩形，
+     由 JS 把这块矩形报给壳（avatar_rect 桥），壳把 Unity 摆进去。 */
+  .chat-layout { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .chat-top { flex: 1; display: flex; gap: 16px; min-height: 0; padding: 14px 20px 8px; }
+  .chat-main { flex: 1 1 auto; min-width: 260px; display: flex; flex-direction: column; min-height: 0; }
+  .avatar-slot { flex: 0 0 auto; height: 100%; aspect-ratio: 16 / 9; max-width: 74%;
+                 display: flex; align-items: center; justify-content: center;
+                 border: 1px dashed var(--border); border-radius: 12px; overflow: hidden; }
+  .avatar-slot[hidden] { display: none; }
+  .avatar-hint { font-size: 12px; color: var(--muted); text-align: center; padding: 0 12px; }
+  .conv-strip { flex: 0 0 23%; min-height: 128px; display: flex; flex-direction: column;
+                border-top: 1px solid var(--border); background: var(--surface); }
+  .conv-pane-head { display: flex; align-items: center; gap: 8px;
                     font-size: 11px; color: var(--muted); letter-spacing: .06em;
-                    text-transform: uppercase; border-bottom: 1px solid var(--border); }
-  .conv-pane-head button { margin-left: auto; padding: 2px 9px; font-size: 11px; }
-  .conv-list { flex: 1; overflow-y: auto; min-height: 0; padding: 8px;
-               display: flex; flex-direction: column; gap: 6px; }
-  .conv-row { position: relative; display: flex; }
-  .conv-item { flex: 1; text-align: left; padding: 8px 34px 8px 10px; border-radius: 10px; cursor: pointer;
-               background: transparent; border: 1px solid transparent; color: var(--muted); }
-  .conv-item:hover { background: var(--surface-2); color: var(--text); }
-  .conv-item.active { background: var(--surface-2); border-color: var(--accent); color: var(--text); }
+                    text-transform: uppercase; }
+  .conv-pane-head button { margin-left: auto; padding: 2px 9px; font-size: 11px; text-transform: none; }
+  .conv-strip .conv-pane-head { padding: 8px 20px 0; }
+  .conv-list { flex: 1; min-height: 0; padding: 8px 20px 10px; display: flex;
+               flex-direction: row; gap: 8px; overflow-x: auto; overflow-y: hidden; }
+  .conv-row { position: relative; flex: 0 0 220px; display: flex; }
+  .conv-item { flex: 1; text-align: left; padding: 8px 30px 8px 10px; border-radius: 10px;
+               cursor: pointer; background: var(--surface-2); border: 1px solid var(--border);
+               color: var(--muted); }
+  .conv-item:hover { background: var(--surface-3); color: var(--text); }
+  .conv-item.active { border-color: var(--accent); color: var(--text); }
   .conv-item .when { font-family: var(--mono); font-size: 10px; opacity: .8; }
-  .conv-item .what { margin-top: 3px; font-size: 12px; word-break: break-word; }
+  /* 横向带很矮：摘要两行封顶，别把条目撑破 */
+  .conv-item .what { margin-top: 3px; font-size: 12px; word-break: break-word; overflow: hidden;
+                     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
   /* 删除按钮：常态可见（免得找不到），悬停才变色 */
   .conv-del { position: absolute; top: 6px; right: 6px; padding: 1px 7px; font-size: 11px;
-              color: var(--muted); background: var(--surface-2); border-color: transparent;
+              color: var(--muted); background: var(--surface-3); border-color: transparent;
               opacity: .55; }
   .conv-del:hover:enabled { color: #ff9e94; border-color: rgba(232, 87, 74, .45); opacity: 1; }
   .conv-del:disabled { opacity: .2; cursor: default; }
-  .chat-main { flex: 1; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
 
   /* ── 语音 ───────────────────────────────── */
   .voice-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
-               padding: 0 28px 18px; font-size: 12px; color: var(--muted); }
+               padding: 0 8px 10px; font-size: 12px; color: var(--muted); }
   .talk { user-select: none; touch-action: none; padding: 7px 18px; }
   .talk.active { background: var(--danger); border-color: var(--danger); color: #fff; font-weight: 600; }
   .voice-status { font-family: var(--mono); font-size: 11px; }
@@ -234,9 +257,7 @@
               align-items: center; margin-bottom: 6px; }
   .pe-trait button { padding: 3px 8px; font-size: 12px; }
 
-  /* ── 右栏 ───────────────────────────────── */
-  .rail { display: flex; flex-direction: column; gap: 14px; overflow-y: auto;
-          padding: 18px 18px 24px; background: var(--surface); border-left: 1px solid var(--border); }
+  /* ── 状态卡（现在住在左栏）─────────────────── */
   .card { background: var(--bg); border: 1px solid var(--border); border-radius: 14px; padding: 14px 15px; }
   .card h2 { font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: .08em;
              text-transform: uppercase; margin-bottom: 12px; }
@@ -252,19 +273,6 @@
   .dot.not_configured { background: #4a5162; }
   .dot.connecting { background: var(--warn); }
   .card-foot { margin-top: 12px; font-size: 11px; color: var(--muted); font-family: var(--mono); }
-  /* ── 右栏的「状态 / 角色」两态（ADR 0031）───────────────
-     角色态下这一列由 Unity 子窗口占住——HTML 画不到它上面（真 HWND），
-     所以卡片必须先让位；这块矩形由 JS 上报给壳（avatar_rect 桥）。 */
-  .rail-tabs { display: flex; gap: 6px; }
-  .rail-tabs[hidden] { display: none; }   /* 自定义 display 会盖掉 hidden 的默认规则 */
-  .rail-tabs button { flex: 1; padding: 4px 8px; font-size: 12px; }
-  .rail-cards { display: flex; flex-direction: column; gap: 14px; }
-  #rail.avatar-mode { overflow: hidden; }
-  #rail.avatar-mode .rail-cards { display: none; }
-  .avatar-slot { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center;
-                 padding: 10px; border: 1px dashed var(--border); border-radius: 12px; }
-  .avatar-slot[hidden] { display: none; }
-  .avatar-hint { font-size: 12px; color: var(--muted); text-align: center; }
   .state-group { margin-bottom: 14px; }
   .state-heading { font-size: 11px; color: var(--muted); letter-spacing: .06em;
                    text-transform: uppercase; margin-bottom: 7px; }
@@ -275,7 +283,7 @@
   .bar .fill { display: block; height: 100%; background: var(--accent); border-radius: 999px;
                transition: width .4s ease; }
   .bar-row .v { text-align: right; font-family: var(--mono); }
-  .rail .tags { margin-top: 12px; }
+  .side-cards .tags { margin-top: 12px; }
 
   /* ── 编辑弹窗 ───────────────────────────── */
   dialog { background: var(--surface); color: var(--text); border: 1px solid var(--border);
@@ -291,17 +299,17 @@
   .dialog-error { font-size: 12px; color: #ff9e94; min-height: 0; }
 
   @media (max-width: 1080px) {
-    .app { grid-template-columns: 176px minmax(0, 1fr) 272px; }
+    .app { grid-template-columns: 200px minmax(0, 1fr); }
   }
-  @media (max-width: 860px) {
+  @media (max-width: 900px) {
     .app { grid-template-columns: 176px minmax(0, 1fr); }
-    .rail { display: none; }
+    .side-cards { display: none; }   /* 太窄时先让状态卡让位 */
   }
 </style>
 </head>
 <body>
 <div class="app">
-  <aside class="nav">
+  <aside class="side">
     <div class="brand"><span class="logo"></span><span>Astra</span></div>
     <nav class="menu">
       <button type="button" class="menu-item active" data-page="chat">对话</button>
@@ -312,9 +320,22 @@
       <button type="button" class="menu-item" data-page="events">事件</button>
       <button type="button" class="menu-item" data-page="anime">动画</button>
     </nav>
-    <div class="nav-foot">
+    <div class="side-conn">
       <div class="conn"><span class="dot" id="ws-dot"></span><span id="ws-state">连接中…</span></div>
       <div class="sid" id="session-id">—</div>
+    </div>
+    <div class="side-cards">
+      <section class="card">
+        <h2>组件状态</h2>
+        <div class="chips" id="health-chips"></div>
+        <p class="card-foot" id="health-foot">正在探测…</p>
+      </section>
+      <section class="card">
+        <h2>角色状态</h2>
+        <div id="state-bars"></div>
+        <p class="card-foot" id="state-foot">—</p>
+        <div class="tags" id="avatar-tags"></div>
+      </section>
     </div>
   </aside>
 
@@ -326,31 +347,39 @@
           <p class="sub" id="conversation-label">尚未开始会话</p>
         </div>
         <div class="head-actions">
+          <label class="switch" id="avatar-switch" hidden>
+            <input type="checkbox" id="show-avatar"><span>显示角色</span>
+          </label>
           <button type="button" id="load-history">载入历史</button>
           <button type="button" class="primary" id="new-conversation">新会话</button>
         </div>
       </header>
-      <div class="chat-split">
-        <aside class="conv-pane">
+      <div class="chat-layout">
+        <div class="chat-top">
+          <div class="chat-main">
+            <div class="chat" id="chat"></div>
+            <form class="composer" id="composer">
+              <input type="text" id="text" placeholder="说点什么…（回车发送；上一轮还在跑时再发一条就会打断它）" autocomplete="off">
+              <button type="submit" class="primary" id="send">发送</button>
+            </form>
+            <div class="voice-row">
+              <label class="switch"><input type="checkbox" id="voice-mode"><span>语音模式（回复合成语音）</span></label>
+              <label class="switch"><input type="checkbox" id="voice-preview" checked><span>识别后先填进输入框</span></label>
+              <button type="button" class="talk" id="talk" disabled>按住说话</button>
+              <span class="voice-status" id="voice-status">—</span>
+            </div>
+          </div>
+          <div class="avatar-slot" id="avatar-slot" hidden>
+            <p class="avatar-hint" id="avatar-hint">角色区（桌面壳里，Unity 播放器会嵌在这一块）</p>
+          </div>
+        </div>
+        <aside class="conv-strip">
           <div class="conv-pane-head">
             <span>过往会话</span>
             <button type="button" id="conv-refresh">刷新</button>
           </div>
           <div class="conv-list" id="conv-list"></div>
         </aside>
-        <div class="chat-main">
-          <div class="chat" id="chat"></div>
-          <form class="composer" id="composer">
-            <input type="text" id="text" placeholder="说点什么…（回车发送；上一轮还在跑时再发一条就会打断它）" autocomplete="off">
-            <button type="submit" class="primary" id="send">发送</button>
-          </form>
-          <div class="voice-row">
-            <label class="switch"><input type="checkbox" id="voice-mode"><span>语音模式（回复合成语音）</span></label>
-            <label class="switch"><input type="checkbox" id="voice-preview" checked><span>识别后先填进输入框</span></label>
-            <button type="button" class="talk" id="talk" disabled>按住说话</button>
-            <span class="voice-status" id="voice-status">—</span>
-          </div>
-        </div>
       </div>
     </section>
 
@@ -502,29 +531,6 @@
       <div class="config-body" id="anime-body"></div>
     </section>
   </main>
-
-  <aside class="rail" id="rail">
-    <div class="rail-tabs" id="rail-tabs" hidden>
-      <button type="button" id="rail-mode-cards" title="显示组件/角色状态卡片（会结束 Unity 进程，腾出显存）">状态</button>
-      <button type="button" id="rail-mode-avatar" title="把 Unity 形象嵌在右栏这一列（重新拉起播放器要十几秒）">角色</button>
-    </div>
-    <div class="rail-cards" id="rail-cards">
-    <section class="card">
-      <h2>组件状态</h2>
-      <div class="chips" id="health-chips"></div>
-      <p class="card-foot" id="health-foot">正在探测…</p>
-    </section>
-    <section class="card">
-      <h2>角色状态</h2>
-      <div id="state-bars"></div>
-      <p class="card-foot" id="state-foot">—</p>
-      <div class="tags" id="avatar-tags"></div>
-    </section>
-    </div>
-    <div class="avatar-slot" id="avatar-slot" hidden>
-      <p class="avatar-hint" id="avatar-hint">角色区（桌面壳里，Unity 播放器会嵌在这一块）</p>
-    </div>
-  </aside>
 </div>
 
 <div class="veil" id="restart-veil" hidden>
@@ -660,6 +666,8 @@ const app = {
   anime: { actions: [], raw: null },
   //: 角色区（ADR 0031）：只在桌面壳里启用（浏览器里没有桥，右栏保持原样）
   avatar: { enabled: true, state: null, lastPayload: "", timer: null },
+  //: 当前页（角色区只在对话页里显示；切页只是藏起来）
+  page: "chat",
   //: 人格页（ADR 0029）：列表 + 运行中 / 待启用 + 当前选中的那份文档
   personas: {
     list: [], directory: "", runningId: null, pendingId: null, supervised: false,
@@ -742,6 +750,7 @@ async function errorDetail(response) {
 /* ── 左栏：页签与连接状态 ─────────────────────────────── */
 
 function showPage(name) {
+  app.page = name;
   for (const item of document.querySelectorAll(".menu-item")) {
     item.classList.toggle("active", item.dataset.page === name);
   }
@@ -758,6 +767,7 @@ function showPage(name) {
   if (name === "events") renderEvents();
   if (name === "anime") loadAnime().catch(reportAnimeError);
   if (name === "persona") loadPersonas().catch(reportPersonaError);
+  applyAvatarMode();   // 角色区只在对话页里显示（切走只是藏起来，进程留着）
 }
 
 function setConnection(kind, text) {
@@ -1886,7 +1896,9 @@ async function saveAdminConfig() {
 async function waitForBackend(attempts) {
   for (let index = 0; index < attempts; index += 1) {
     try {
-      await fetchJson("/health", null, 2000);
+      // **超时必须跟 /health 的真实耗时对齐**：LM Studio 在跑时一次 /health 要 ~2.4 秒，
+      // 早先写死的 2 秒会把每一次都判成失败 → 重启永远"卡着"（实测踩过）
+      await fetchJson("/health", null, HEALTH_TIMEOUT_MS);
       return true;
     } catch {
       await new Promise((resolve) => setTimeout(resolve, 1000));
@@ -2783,12 +2795,12 @@ function desktopBridge() {
 
 function applyAvatarMode() {
   const desktop = Boolean(desktopBridge());
-  //: 浏览器里连这个切换都不出现——右栏照旧是两张卡片
-  el("rail-tabs").hidden = !desktop;
-  el("rail-mode-avatar").classList.toggle("active", app.avatar.enabled);
-  el("rail-mode-cards").classList.toggle("active", !app.avatar.enabled);
-  const showing = desktop && app.avatar.enabled;
-  el("rail").classList.toggle("avatar-mode", showing);
+  //: 浏览器里连这个开关都不出现——没有壳就没有角色区
+  el("avatar-switch").hidden = !desktop;
+  el("show-avatar").checked = app.avatar.enabled;
+  //: 角色区在对话页里；切到别的页只是**藏起来**（进程留着），
+  //: 关掉「显示角色」才是结束进程（省显存，ADR 0031 §3）
+  const showing = desktop && app.avatar.enabled && app.page === "chat";
   el("avatar-slot").hidden = !showing;
   reportAvatarSlot();
 }
@@ -3032,9 +3044,7 @@ el("persona-new-form").addEventListener("submit", (event) => {
 
 /* ── 角色区的事件绑定 ─────────────────────────────────── */
 
-el("rail-mode-avatar").addEventListener("click", () => setAvatarEnabled(true));
-
-el("rail-mode-cards").addEventListener("click", () => setAvatarEnabled(false));
+el("show-avatar").addEventListener("change", (event) => setAvatarEnabled(event.target.checked));
 
 /* ── 启动 ─────────────────────────────────────────────── */
 

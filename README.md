@@ -371,7 +371,36 @@ Unity 端**自己实现**的部分（协议细节见 `docs/04` §3）：
 - **保存会重写整份 TOML**（注释不保留，旧文件留成 `<id>.toml.bak`）；
   **删除人格只删文件**，那一位的对话与记忆仍在数据库里（用同名 id 建回来就能接着用）。
 
-**已知限制（阶段 4 为止）**：
+**桌面应用已具备**（[ADR 0030](docs/decisions/0030-desktop-shell-pywebview.md) /
+[ADR 0031](docs/decisions/0031-unity-embedded-single-window.md)：`astra desktop`）：
+
+- **一个窗口**：`uv run astra desktop` 打开 pywebview（WebView2）窗口加载**同一份** `/studio`
+  页面——浏览器里怎么用，桌面里就怎么用；前端代码一行没重写。
+- **壳接管监督者**：后端子进程由壳拉起（沿用 ADR 0026 的退出码 75 协议），
+  所以设置页的「保存并重启」照旧可用；窗口**关掉只是隐藏到托盘**，托盘菜单才有「退出」。
+- **单实例**：再开一次会把已有窗口唤到前台，不会起第二个后端。
+- **角色区**：Unity 播放器以子窗口嵌进对话页右上（16:9，占满可用高度）；
+  对话页右上角「显示角色」开关 = **显存开关**（关掉就结束 Unity 进程）；
+  切到别的页只是把它藏起来，进程留着。
+- **日志**：GUI 启动没有控制台，后端输出落 `data/astra-desktop.log`、
+  播放器输出落 `data/astra-avatar.log`。
+
+> **Unity 播放器要单独构建**（工程只 Play 过 Editor 的话，没有可嵌入的播放器）：
+>
+> ```powershell
+> & "E:\2022.3.48f1c1\Editor\Unity.exe" -batchmode -quit `
+>     -projectPath "E:\UnityProject\VirtualTuber" `
+>     -executeMethod BuildPlayer.Windows -logFile -
+> ```
+>
+> 产物 `Builds/Windows/Astra.exe`；构建脚本会把 Player Settings 设成
+> "窗口化 + 可调整 + 后台渲染"（嵌入的前提），并把 **VRM 运行时要用到的 shader
+> （`VRM10/MToon10` / `UniGLTF/UniUnlit`）钉进 always-included**——VRM 的材质是运行时
+> 按名字找 shader 的，不钉就会被构建剥离（实测症状：播放器里角色空白、
+> 日志写 `VRM 加载失败：... Shader`）。
+> 然后在 Studio 设置页把 `ASTRA_AVATAR_PLAYER_PATH` 指到那个 exe。
+
+**已知限制（桌面应用为止）**：
 
 - **人格的编辑与切换要重启后端**（人格在装配期加载，ADR 0015/0029）；
   保存人格会重写整份 TOML、不保留原注释（旧文件有 `.bak`，页面里写明了这一点）。
@@ -388,7 +417,8 @@ Unity 端**自己实现**的部分（协议细节见 `docs/04` §3）：
 - **检索结果不显示相似度分**：`GET /v1/memories?query=` 只返回条目、不返回分数，
   界面只说"按相关度排序"。
 - **记忆 / 会话删除不可恢复**：没有回收站（刻意如此，都有二次确认）。
-- **两个窗口**：形象在 Unity（M5），界面在浏览器。桌面壳不在当前阶段。
+- **形象与界面在同一个窗口里**：角色是嵌进 WebView 窗口的 Unity 子窗口（真 HWND）；
+  它那块矩形**不能被 HTML 覆盖**（所以不能做"UI 浮在角色上"），且**只在对话页显示**。
 - 页面与 `/v1` API 一样**没有鉴权**：安全边界是默认绑定 `127.0.0.1`。Studio、`/v1/admin/*`
   与 `/v1/avatar/animation` 都**无条件挂载**（`ASTRA_ENV=prod` 也在），与只在 dev 挂载的
   `/dev` 相反——理由见 [ADR 0025](docs/decisions/0025-studio-application.md)、
@@ -430,6 +460,7 @@ Unity 端**自己实现**的部分（协议细节见 `docs/04` §3）：
 | `uv run astra serve` | 启动 HTTP + WebSocket 服务（默认带重启监督，`--no-supervisor` 可关） |
 | `uv run astra chat` | 连上 WebSocket 聊天（REPL） |
 | `uv run astra chat --once "文本"` | 单轮对话，打印完整事件序列 |
+| `uv run astra desktop` | 桌面应用：独立窗口 + 托盘 + 自带后端 + 内嵌角色区（ADR 0030/0031） |
 | `uv run astra migrate` | 应用数据库迁移（幂等） |
 | `uv run pytest -q` | 运行全部测试 |
 | `uv run ruff check .` | lint |
@@ -451,6 +482,27 @@ Unity 端**自己实现**的部分（协议细节见 `docs/04` §3）：
 情绪 / 动作 / 音色风格的**白名单不在这些文件里**，它们在
 `src/astra/domain/vocabulary.py`：那是与 Unity 端的协议契约，必须有单一真相，
 并通过 `GET /v1/config` 分发给客户端。
+
+## 验收（桌面应用 · 阶段 5）
+
+> **状态：代码与机械验收已过**（Unity 子窗口与页面报的矩形逐像素一致、VRM 加载成功、
+> 带 WS 连接时「保存并重启」6 秒恢复、硬杀无孤儿进程）。下面这几步留给真机走一遍。
+
+```powershell
+uv run astra desktop        # 前提：设置页里把 ASTRA_AVATAR_PLAYER_PATH 填成 Builds\Windows\Astra.exe
+```
+
+```text
+1. 窗口打开 Studio（首次约 3 秒）；对话页右上角有「显示角色」勾选框
+2. 几秒后角色出现在右上那块 16:9 区域（首帧是 "Made with Unity" 闪屏，随后是模型）
+3. 拖动窗口边缘缩放 → 角色跟着变、比例不变形；最大化也正常
+4. 点角色区域 → 能拿到焦点；回输入框打字不漏字
+5. 关掉「显示角色」→ 任务管理器里 Astra.exe 消失（显存释放）；再勾上 → 十几秒后回来
+6. 切到「记忆」页 → 角色消失（进程还在）；切回「对话」→ 立刻回来
+7. 设置页点「保存并重启」→ 遮罩出现 → 约 6 秒后自动恢复、页面重连
+8. 关窗 → 隐藏到托盘（后端继续跑）；托盘「退出」→ Unity / 后端 / 壳三个进程都清干净
+9. `data/astra-avatar.log` 里应有 `astra: vrm loaded in …s`；`data/astra-desktop.log` 是后端输出
+```
 
 ## 验收（Studio · 阶段 4）
 

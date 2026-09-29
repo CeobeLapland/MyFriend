@@ -125,6 +125,28 @@
 3. **`webview.start()` 的回调早于窗口 `Show()`**：那一刻枚举窗口只看到未显示的窗体，
    早先"只看可见窗口"的写法直接找不到句柄 → 角色区永远起不来。改成带重试（8 秒），
    实在没可见的就用那个未显示的窗体句柄当宿主（`-parentHWND` 一样能用）。
+4. **布局要按"角色区是主视觉"来做**（用户实机反馈）：最初把角色区放进 320px 的右栏，
+   16:9 的画面被挤成一根竖条，"根本看不到人物"。定稿改成：
+   **左栏** = 导航 + 组件/角色状态卡（窄列里卡片与条形图都压缩过，整列可滚动）；
+   **主区（对话页）** = 上面「左聊天（窄）+ 右角色区（`aspect-ratio: 16/9`，占满可用高度）」、
+   下面「横向滚动的历史带（约 23% 高，摘要两行封顶）」。
+   实测（最大化窗口 2560×1440、150% 缩放）：角色区 **1059×601（比例 1.76 ≈ 16:9）**，
+   位置与页面报的矩形逐像素一致；壳侧一行没改——**摆放逻辑是位置驱动的**，
+   页面报什么矩形就摆什么矩形。
+5. **打包会剥离 VRM 的 shader**（用户实机反馈）：播放器里角色一片空白，播放器日志写
+   `VRM 加载失败：Value cannot be null. Parameter name: Shader`——VRM 的材质是**运行时**
+   按名字找 shader 的（UniVRM 从 .vrm 里读材质描述），构建期没有任何材质引用它们，
+   于是 `VRM10/MToon10` 与 `UniGLTF/UniUnlit` 被剥离。修法写进构建脚本
+   （`BuildPlayer.EnsureAlwaysIncludedShaders`：用 SerializedObject 往
+   `m_AlwaysIncludedShaders` 里加，可复现、不靠手点）。实测修复后
+   `astra: vrm loaded in 2.3s`，并成功拉到 `/v1/config`。
+6. **「保存并重启」在桌面壳下"一直卡着"**（用户实机反馈；其实与壳无关）：前端
+   `waitForBackend` 里 `/health` 的超时写死 2 秒，而本机 LM Studio 在跑时一次 `/health`
+   要 ~2.4 秒——30 次重试全被超时掐掉，于是永远等不到"回来"。改成复用
+   `HEALTH_TIMEOUT_MS`（8 秒）。**与我在壳里踩的是同一个坑**（ADR 0030 的
+   `_HEALTH_TIMEOUT_S`）。实测：带 Unity 的 WS 连接时 `POST /v1/admin/restart` → 202，
+   6.1 秒后 `/health` 恢复（说明 uvicorn 关机没被 WebSocket 拖住，不必引入
+   graceful-shutdown 超时）。
 
 **P2 的机械验收（我方冒烟，非人眼）**：真实壳 + 真实播放器 →
 Unity 子窗口出现（约 1 秒）、可见、位置与页面报的 `#avatar-slot` **逐像素一致**
