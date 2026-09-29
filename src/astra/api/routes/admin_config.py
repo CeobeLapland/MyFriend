@@ -56,6 +56,7 @@ _WHITELIST: dict[str, tuple[str, str]] = {
     "ASTRA_TTS_REFERENCE_AUDIO": ("语音", "参考音频（zero-shot 克隆；留空用预置音色）"),
     "ASTRA_ENV": ("运行", "运行环境（prod 会关掉 /dev）"),
     "ASTRA_AVATAR_ENABLED": ("运行", "形象客户端已接入（纯通告）"),
+    "ASTRA_AVATAR_PLAYER_PATH": ("运行", "Unity 播放器路径（桌面壳的角色区；留空不嵌）"),
     "ASTRA_LOG_LEVEL": ("运行", "日志级别"),
 }
 

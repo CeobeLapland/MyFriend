@@ -252,6 +252,19 @@
   .dot.not_configured { background: #4a5162; }
   .dot.connecting { background: var(--warn); }
   .card-foot { margin-top: 12px; font-size: 11px; color: var(--muted); font-family: var(--mono); }
+  /* ── 右栏的「状态 / 角色」两态（ADR 0031）───────────────
+     角色态下这一列由 Unity 子窗口占住——HTML 画不到它上面（真 HWND），
+     所以卡片必须先让位；这块矩形由 JS 上报给壳（avatar_rect 桥）。 */
+  .rail-tabs { display: flex; gap: 6px; }
+  .rail-tabs[hidden] { display: none; }   /* 自定义 display 会盖掉 hidden 的默认规则 */
+  .rail-tabs button { flex: 1; padding: 4px 8px; font-size: 12px; }
+  .rail-cards { display: flex; flex-direction: column; gap: 14px; }
+  #rail.avatar-mode { overflow: hidden; }
+  #rail.avatar-mode .rail-cards { display: none; }
+  .avatar-slot { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center;
+                 padding: 10px; border: 1px dashed var(--border); border-radius: 12px; }
+  .avatar-slot[hidden] { display: none; }
+  .avatar-hint { font-size: 12px; color: var(--muted); text-align: center; }
   .state-group { margin-bottom: 14px; }
   .state-heading { font-size: 11px; color: var(--muted); letter-spacing: .06em;
                    text-transform: uppercase; margin-bottom: 7px; }
@@ -490,7 +503,12 @@
     </section>
   </main>
 
-  <aside class="rail">
+  <aside class="rail" id="rail">
+    <div class="rail-tabs" id="rail-tabs" hidden>
+      <button type="button" id="rail-mode-cards" title="显示组件/角色状态卡片（会结束 Unity 进程，腾出显存）">状态</button>
+      <button type="button" id="rail-mode-avatar" title="把 Unity 形象嵌在右栏这一列（重新拉起播放器要十几秒）">角色</button>
+    </div>
+    <div class="rail-cards" id="rail-cards">
     <section class="card">
       <h2>组件状态</h2>
       <div class="chips" id="health-chips"></div>
@@ -502,6 +520,10 @@
       <p class="card-foot" id="state-foot">—</p>
       <div class="tags" id="avatar-tags"></div>
     </section>
+    </div>
+    <div class="avatar-slot" id="avatar-slot" hidden>
+      <p class="avatar-hint" id="avatar-hint">角色区（桌面壳里，Unity 播放器会嵌在这一块）</p>
+    </div>
   </aside>
 </div>
 
@@ -603,6 +625,8 @@ const HISTORY_LIMIT = 200;
 const STORE_KEY = "astra.studio.conversation_id";
 //: 语音"识别后先填进输入框"的偏好（默认开）
 const PREVIEW_KEY = "astra.studio.voice_preview";
+//: 「显示角色」开关（桌面壳的右栏两态；默认开，ADR 0031 §3）。关掉 = 结束 Unity 进程。
+const AVATAR_KEY = "astra.studio.avatar_enabled";
 
 /* ── 小工具 ───────────────────────────────────────────── */
 
@@ -634,6 +658,8 @@ const app = {
   lmstudio: null,
   events: [],
   anime: { actions: [], raw: null },
+  //: 角色区（ADR 0031）：只在桌面壳里启用（浏览器里没有桥，右栏保持原样）
+  avatar: { enabled: true, state: null, lastPayload: "", timer: null },
   //: 人格页（ADR 0029）：列表 + 运行中 / 待启用 + 当前选中的那份文档
   personas: {
     list: [], directory: "", runningId: null, pendingId: null, supervised: false,
@@ -2748,6 +2774,67 @@ async function deletePersona() {
   personaNote("ok", "已删除 " + personaId + ".toml（它的对话与记忆仍在数据库里）。");
 }
 
+/* ── 角色区（ADR 0031，只有桌面壳里有）───────────────── */
+
+//: 桥：浏览器里是 undefined，桌面壳里由 pywebview 注入
+function desktopBridge() {
+  return window.pywebview && window.pywebview.api ? window.pywebview.api : null;
+}
+
+function applyAvatarMode() {
+  const desktop = Boolean(desktopBridge());
+  //: 浏览器里连这个切换都不出现——右栏照旧是两张卡片
+  el("rail-tabs").hidden = !desktop;
+  el("rail-mode-avatar").classList.toggle("active", app.avatar.enabled);
+  el("rail-mode-cards").classList.toggle("active", !app.avatar.enabled);
+  const showing = desktop && app.avatar.enabled;
+  el("rail").classList.toggle("avatar-mode", showing);
+  el("avatar-slot").hidden = !showing;
+  reportAvatarSlot();
+}
+
+function setAvatarEnabled(enabled) {
+  app.avatar.enabled = enabled;
+  writeStored(AVATAR_KEY, enabled ? "1" : "0");
+  app.avatar.lastPayload = "";   // 状态变了，下一次一定要上报
+  applyAvatarMode();
+  refreshAvatarState().catch(() => {});
+}
+
+function reportAvatarSlot() {
+  const api = desktopBridge();
+  if (!api) return;
+  const rect = el("avatar-slot").getBoundingClientRect();
+  const payload = {
+    x: rect.x, y: rect.y, width: rect.width, height: rect.height,
+    visible: !el("avatar-slot").hidden && rect.width >= 40 && rect.height >= 40,
+    enabled: app.avatar.enabled,
+    // 视口尺寸一起报：壳按"客户区物理像素 ÷ 视口 CSS 像素"换算，
+    // 而不是假设一个 DPI 比例（实测 WebView2 的视口与客户区不成 DPI 关系）
+    viewport_width: window.innerWidth,
+    viewport_height: window.innerHeight,
+  };
+  const encoded = JSON.stringify(payload);
+  // 只在"矩形/开关变了"或"角色还没跑起来"时上报——后者是启动重试的唯一来源
+  const running = Boolean(app.avatar.state && app.avatar.state.running);
+  if (encoded === app.avatar.lastPayload && running) return;
+  app.avatar.lastPayload = encoded;
+  api.avatar_rect(payload).catch(() => {});
+}
+
+async function refreshAvatarState() {
+  const api = desktopBridge();
+  if (!api) return;
+  let state = null;
+  try {
+    state = await api.avatar_state();
+  } catch {
+    return;
+  }
+  app.avatar.state = state;
+  el("avatar-hint").textContent = String(state.message || "—");
+}
+
 /* ── 事件绑定 ─────────────────────────────────────────── */
 
 for (const item of document.querySelectorAll(".menu-item")) {
@@ -2943,12 +3030,30 @@ el("persona-new-form").addEventListener("submit", (event) => {
   });
 });
 
+/* ── 角色区的事件绑定 ─────────────────────────────────── */
+
+el("rail-mode-avatar").addEventListener("click", () => setAvatarEnabled(true));
+
+el("rail-mode-cards").addEventListener("click", () => setAvatarEnabled(false));
+
 /* ── 启动 ─────────────────────────────────────────────── */
 
 app.sessionId = newUlid();
 el("session-id").textContent = "session " + app.sessionId.slice(0, 8);
 app.voice.preview = readStored(PREVIEW_KEY) !== "0";   // 默认开
 el("voice-preview").checked = app.voice.preview;
+app.avatar.enabled = readStored(AVATAR_KEY) !== "0";   // 默认开（ADR 0031 §3）
+applyAvatarMode();
+window.addEventListener("resize", () => reportAvatarSlot());
+// 桥是 pywebview 异步注入的：注入完再定态一次，并开始报点（报点是角色启动的唯一来源）
+window.addEventListener("pywebviewready", () => {
+  applyAvatarMode();
+  refreshAvatarState().catch(() => {});
+});
+app.avatar.timer = setInterval(() => {
+  reportAvatarSlot();
+  refreshAvatarState().catch(() => {});
+}, 1500);
 renderAvatarTags();
 syncVoiceAvailability();
 buildPersonaEditor();   // 编辑器先建好，打开人格页时只填值

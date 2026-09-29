@@ -64,6 +64,10 @@ class BaseSettingsMixin:
     #: 理由见 ADR 0024：`docs/04` §2 的事件序列本身就无条件列出这两个事件，
     #: 且开发者控制台的原始事件流需要看到它们。
     avatar_enabled: bool = False
+    #: Unity 播放器可执行文件——桌面壳把它嵌进窗口当"角色区"（ADR 0031）。
+    #: 留空 = 桌面壳不嵌角色；Studio 里那个开关会如实说明"没配播放器"。
+    #: 构建命令见 README（``Builds/Windows/Astra.exe``）。
+    avatar_player_path: Path | None = None
 
     # ── 健康检查 ────────────────────────────────────────
     health_probe_timeout_s: float = Field(default=2.0, gt=0)
@@ -73,4 +77,10 @@ class BaseSettingsMixin:
     @classmethod
     def _blank_to_none(cls, value: object) -> object:
         """把 ``ASTRA_LOG_FILE=`` 这类空串归一化为 None。"""
+        return blank_to_none(value)
+
+    @field_validator("avatar_player_path", mode="before")
+    @classmethod
+    def _blank_avatar_player(cls, value: object) -> object:
+        """``ASTRA_AVATAR_PLAYER_PATH=``（留空）归一化为 None。"""
         return blank_to_none(value)

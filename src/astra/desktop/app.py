@@ -10,7 +10,8 @@ astra desktop（壳进程）
 ├─ 主线程：pywebview 窗口（WebView2）→ http://127.0.0.1:8000/studio
 ├─ 工作线程：run_supervised(child_command(), …, stop=停机事件)
 │    └─ 后端子进程：python -m astra.cli serve --no-supervisor（ASTRA_SUPERVISED=1）
-└─ 托盘线程：pystray（显示窗口 / 退出）
+├─ 托盘线程：pystray（显示窗口 / 退出）
+└─ 角色子进程：Builds/Windows/Astra.exe -parentHWND <壳窗口>（ADR 0031，可选）
 ```
 
 三条不变量：
@@ -25,8 +26,6 @@ astra desktop（壳进程）
 
 from __future__ import annotations
 
-import ctypes
-import ctypes.wintypes as wintypes
 import logging
 import os
 import subprocess
@@ -39,6 +38,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import IO, Any
 
+from astra.desktop import win32
+from astra.desktop.avatar import AvatarHost, AvatarState
 from astra.settings import Settings
 from astra.supervisor import SUPERVISED_ENV, child_command, run_supervised
 
@@ -60,8 +61,8 @@ _STOP_JOIN_TIMEOUT_S = 20.0
 #: 被保留的互斥体句柄（句柄一被回收，单实例就失效了）
 _MUTEX_HANDLES: list[int] = []
 
-_ERROR_ALREADY_EXISTS = 183
-_SW_RESTORE = 9
+#: pywebview 在 Windows 上的窗口类前缀（找"我们自己的窗口"用）
+_FORM_CLASS_PREFIX = "WindowsForms10"
 
 
 # ── 纯函数（有单测）─────────────────────────────────────
@@ -95,21 +96,36 @@ def log_path(settings: Settings) -> Path:
 
 
 class DesktopApi:
-    """Studio 页面能调到的壳接口。**只有两个方法**（ADR 0030 §3）。
+    """Studio 页面能调到的壳接口。**三个方法、都很窄**（ADR 0030 §3 + P2 修订）。
 
     不做通用 IPC——它不是插件平台。页面侧只在 ``window.pywebview`` 存在时启用这些行为，
     所以同一个 studio.html 在浏览器里照旧。
     """
 
-    def __init__(self, quit_app: Callable[[], None]) -> None:
+    def __init__(self, quit_app: Callable[[], None], avatar: AvatarHost | None = None) -> None:
         self._quit_app = quit_app
-        #: ``#avatar-slot`` 的最新矩形（P2 起用它摆 Unity 子窗口，ADR 0031）
-        self.last_avatar_rect: dict[str, float] | None = None
+        self._avatar = avatar
+        #: 页面最近报上来的 ``#avatar-slot`` 矩形与开关（诊断/测试用）
+        self.last_avatar_rect: dict[str, object] | None = None
 
-    def avatar_rect(self, rect: dict[str, float]) -> bool:
-        """记下 ``#avatar-slot`` 的矩形。P2 之前只是记账（返回 True 表示收到）。"""
-        self.last_avatar_rect = {key: float(value) for key, value in rect.items()}
-        return True
+    def avatar_rect(self, rect: dict[str, object]) -> bool:
+        """页面报来 ``#avatar-slot`` 的矩形 + 两个开关（P2 修订后的载荷）：
+
+        ``{x, y, width, height, visible, enabled}``——
+        ``enabled=False`` 是"关掉「显示角色」"（结束进程，省显存），
+        ``visible=False`` 只是"这块区域现在看不见"（藏起来，进程留着）。
+        """
+        self.last_avatar_rect = dict(rect)
+        if self._avatar is None:
+            return False
+        return self._avatar.apply(rect)
+
+    def avatar_state(self) -> dict[str, object]:
+        """只读状态：配没配播放器、在不在跑、以及一句人话。"""
+        if self._avatar is None:
+            return {"available": False, "running": False, "message": "这个进程不是桌面壳"}
+        state: AvatarState = self._avatar.state()
+        return {"available": state.available, "running": state.running, "message": state.message}
 
     def quit_app(self) -> None:
         """页面上的退出入口（托盘之外的第二出口）。**不阻塞 JS 调用**。"""
@@ -122,40 +138,50 @@ class DesktopApi:
 def acquire_single_instance() -> bool:
     """命名互斥体：已经有实例时返回 ``False``。
 
-    拿不到互斥体（极小概率的系统错误）时**放行**——单实例是体验优化，
-    不该因为一个系统调用失败就把应用挡在门外。
+    细节（句柄要一直持有）见 :func:`astra.desktop.win32.acquire_named_mutex`。
     """
-    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, wintypes.BOOL, wintypes.LPCWSTR]
-    kernel32.CreateMutexW.restype = wintypes.HANDLE
-
-    handle = kernel32.CreateMutexW(None, False, MUTEX_NAME)
-    if not handle:
+    first, handle = win32.acquire_named_mutex(MUTEX_NAME)
+    if handle:
+        _MUTEX_HANDLES.append(handle)
+    elif first:
         _logger.warning(
             "单实例互斥体创建失败，按「没有别的实例」继续",
             extra={"event": "desktop.mutex.failed"},
         )
-        return True
-
-    _MUTEX_HANDLES.append(int(handle))
-    return ctypes.get_last_error() != _ERROR_ALREADY_EXISTS
+    return first
 
 
 def focus_existing_window() -> bool:
     """把已有实例的窗口唤到前台；找不到就返回 ``False``。"""
-    user32 = ctypes.WinDLL("user32", use_last_error=True)
-    user32.FindWindowW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR]
-    user32.FindWindowW.restype = wintypes.HWND
-    user32.ShowWindow.argtypes = [wintypes.HWND, ctypes.c_int]
-    user32.SetForegroundWindow.argtypes = [wintypes.HWND]
-
-    hwnd = user32.FindWindowW(None, WINDOW_TITLE)
+    hwnd = win32.find_window_by_title(WINDOW_TITLE)
     if not hwnd:
         return False
-
-    user32.ShowWindow(hwnd, _SW_RESTORE)
-    user32.SetForegroundWindow(hwnd)
+    win32.focus_window(hwnd)
     return True
+
+
+def find_own_window(pid: int, *, timeout_s: float = 8.0) -> int:
+    """找本进程那个 pywebview 窗口（靠"自己 PID + 窗口类前缀"，不依赖标题）。
+
+    标题会被页面改写（``<title>``），所以不拿标题当锚；类名是 pywebview 在 Windows 上
+    的 WinForms 窗口类，稳定。
+
+    **带重试是必要的**：``webview.start()`` 的回调会在 GUI 刚起来时就被调用，
+    那一刻窗口往往还没 ``Show()``（实测踩过：只看可见窗口 → 一个都没找到 →
+    角色区永远起不来）。这里等它最多 ``timeout_s`` 秒；实在没可见的，就把那个
+    还没显示的窗体句柄返回（当 ``-parentHWND`` 的宿主一样能用）。
+    """
+    deadline = time.monotonic() + timeout_s
+    fallback = 0
+    while time.monotonic() < deadline:
+        for hwnd in win32.top_level_windows_of(pid):
+            if not win32.window_class(hwnd).startswith(_FORM_CLASS_PREFIX):
+                continue
+            if win32.is_window_visible(hwnd):
+                return hwnd
+            fallback = fallback or hwnd
+        time.sleep(0.2)
+    return fallback
 
 
 # ── 后端子进程 ──────────────────────────────────────────
@@ -238,10 +264,14 @@ class DesktopShell:
         self._settings = settings
         self._stop = threading.Event()
         self._backend = _Backend(settings=settings, stop=self._stop)
+        self._avatar = AvatarHost(
+            player=settings.avatar_player_path,
+            log_file=settings.data_dir / "astra-avatar.log",
+        )
         self._window: Any = None
         self._tray: Any = None
         self._quitting = False
-        self.api = DesktopApi(self.quit)
+        self.api = DesktopApi(self.quit, avatar=self._avatar)
 
     # ── 生命周期 ────────────────────────────────────────
 
@@ -291,7 +321,16 @@ class DesktopShell:
             )
 
     def _after_gui_started(self) -> None:
-        """GUI 起好之后（pywebview 在另一个线程里调它）：装托盘。"""
+        """GUI 起好之后（pywebview 在另一个线程里调它）：接上角色区、装托盘。"""
+        hwnd = find_own_window(os.getpid())
+        if hwnd:
+            self._avatar.attach(hwnd)
+        else:  # pragma: no cover - 只在极少数窗口枚举失败时发生
+            _logger.warning(
+                "没找到自己的窗口句柄——角色区起不来（托盘照常）",
+                extra={"event": "desktop.hwnd.missing"},
+            )
+
         try:
             self._tray = _start_tray(self)
         except Exception:
@@ -309,6 +348,8 @@ class DesktopShell:
         return False
 
     def _stop_everything(self) -> None:
+        # 顺序照 ADR 0030 §1：角色 → 后端 → 窗口
+        self._avatar.stop(reason="壳退出")
         self._backend.stop_and_join()
         if self._tray is not None:
             try:
@@ -336,6 +377,8 @@ class DesktopShell:
                 self._tray.stop()
             except Exception:  # pragma: no cover
                 _logger.warning("停托盘时出错", exc_info=True, extra={"event": "desktop.tray.stop"})
+        # 顺序照 ADR 0030 §1：角色 → 后端 → 窗口
+        self._avatar.stop(reason="用户退出")
         self._backend.stop_and_join()
         if self._window is not None:
             self._window.destroy()

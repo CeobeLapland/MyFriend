@@ -38,10 +38,16 @@
 
 ### 3. UI 与壳的桥：一个极窄的 JS API
 
-- 只暴露两个方法：`avatar_rect({x, y, width, height, visible})`（ADR 0031 用）与
-  `quit_app()`（托盘之外的第二出口）。**不做通用 IPC 通道**——它不是插件平台。
+- **三个方法**（P2 加了第三个只读方法，见下）：`avatar_rect(payload)`、`avatar_state()`、
+  `quit_app()`。**不做通用 IPC通道**——它不是插件平台。
+- `avatar_rect` 的载荷在 P2 扩了：`{x, y, width, height, visible, enabled, viewport_width,
+  viewport_height}`。两个开关语义不同——`enabled=False`（关掉「显示角色」）**结束 Unity 进程**；
+  `visible=False`（切到"状态"卡片 / 窗口太窄）只是**藏起来**。
+  `viewport_*` 是 P2 实测加的：**壳不能假设一个 DPI 比例**（见 ADR 0031 的 P2 回填），
+  换算比要用"客户区物理尺寸 ÷ 页面自报视口"**实测**。
 - Studio 的 HTML/CSS/JS 与全部守门测试**保持不变**（ADR 0025 §2 的承诺：前端代码不重写）；
-  只在检测到 `window.pywebview` 时启用桌面专属行为（否则浏览器里照旧）。
+  只在检测到 `window.pywebview` 时启用桌面专属行为（否则浏览器里照旧——连"状态 / 角色"
+  那个切换都不出现）。
 
 ### 4. 依赖边界：`astra serve` 不许沾 pywebview
 

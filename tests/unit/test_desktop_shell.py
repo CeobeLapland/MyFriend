@@ -14,6 +14,7 @@ from pathlib import Path
 import pytest
 
 from astra.desktop.app import DesktopApi, icon_path, local_host, log_path, studio_url
+from astra.desktop.avatar import AvatarHost, compute_placement, placement_scales
 from astra.settings import Settings
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -107,12 +108,19 @@ def test_tray_icon_asset_exists() -> None:
 # ── 窄桥（ADR 0030 §3）──────────────────────────────────
 
 
-def test_avatar_rect_is_remembered_as_floats() -> None:
+def test_avatar_rect_is_remembered_as_payload() -> None:
     api = DesktopApi(lambda: None)
 
     assert api.last_avatar_rect is None
-    assert api.avatar_rect({"x": 24, "y": 150.5, "width": 918, "height": 549}) is True
-    assert api.last_avatar_rect == {"x": 24.0, "y": 150.5, "width": 918.0, "height": 549.0}
+    payload = {"x": 24, "y": 150, "width": 300, "height": 400, "visible": True, "enabled": True}
+    # 没有 AvatarHost（比如测试环境）时如实返回 False，但载荷照样记下来
+    assert api.avatar_rect(payload) is False
+    assert api.last_avatar_rect == payload
+    assert api.avatar_state() == {
+        "available": False,
+        "running": False,
+        "message": "这个进程不是桌面壳",
+    }
 
 
 def test_quit_app_does_not_block_the_js_caller() -> None:
@@ -123,3 +131,73 @@ def test_quit_app_does_not_block_the_js_caller() -> None:
     api.quit_app()
 
     assert done.wait(timeout=2.0) is True
+
+
+# ── 角色区：几何与状态（ADR 0031）────────────────────────
+
+
+def test_placement_scales_are_measured_not_assumed() -> None:
+    """换算比按"客户区 ÷ 页面视口"实测（实测 WebView2 视口与客户区不成 DPI 关系）。"""
+    rect = {"viewport_width": 1600, "viewport_height": 1000}
+
+    assert placement_scales(rect, client_size=(800, 500), fallback_scale=1.5) == (0.5, 0.5)
+
+
+def test_placement_scales_fall_back_to_dpi_without_a_viewport() -> None:
+    assert placement_scales({}, client_size=(800, 600), fallback_scale=1.5) == (1.5, 1.5)
+
+
+def test_placement_scales_css_pixels() -> None:
+    placement = compute_placement(
+        {"x": 24, "y": 150, "width": 300, "height": 400, "visible": True},
+        scales=(1.5, 1.5),
+        client_size=(1600, 1200),
+    )
+
+    assert placement == (36, 225, 450, 600)
+
+
+@pytest.mark.parametrize(
+    "rect",
+    [
+        {"x": 0, "y": 0, "width": 300, "height": 400, "visible": False},
+        {"x": 0, "y": 0, "width": 20, "height": 400, "visible": True},  # 太窄
+        {"x": 0, "y": 0, "width": 300, "height": 10, "visible": True},  # 太扁
+    ],
+)
+def test_placement_hides_when_it_should_not_show(rect: dict[str, object]) -> None:
+    """不可见 / 太小的区域 → 返回 None，调用方据此把窗口藏起来。"""
+    assert compute_placement(rect, scales=(1.0, 1.0), client_size=(800, 600)) is None
+
+
+def test_placement_clamps_into_the_client_area() -> None:
+    """clamp 用"挪进来"而不是"缩小"——Unity 的画面比例不该被挤变形。"""
+    placement = compute_placement(
+        {"x": 900, "y": 700, "width": 300, "height": 400, "visible": True},
+        scales=(1.0, 1.0),
+        client_size=(1000, 800),
+    )
+
+    assert placement == (700, 400, 300, 400)
+
+
+def test_avatar_state_is_honest_about_a_missing_player(tmp_path: Path) -> None:
+    unset = AvatarHost(player=None)
+    assert unset.state().available is False
+    assert "ASTRA_AVATAR_PLAYER_PATH" in unset.state().message
+
+    missing = AvatarHost(player=tmp_path / "nope.exe")
+    assert missing.state().available is False
+    assert "不在" in missing.state().message
+
+
+def test_avatar_apply_does_nothing_until_the_shell_window_is_known(tmp_path: Path) -> None:
+    """还没 attach（不知道壳窗口句柄）时，页面的报点不该拉起任何进程。"""
+    player = tmp_path / "Astra.exe"
+    player.write_bytes(b"")
+    host = AvatarHost(player=player)
+
+    assert host.state().available is True
+    payload = {"x": 0, "y": 0, "width": 300, "height": 400, "visible": True, "enabled": True}
+    assert host.apply(payload) is False
+    assert host.state().running is False
