@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import threading
 from typing import Any
 
 import pytest
@@ -51,9 +52,9 @@ def spawner() -> Any:
     processes: list[_FakeProcess] = []
     calls: list[dict[str, Any]] = []
 
-    def spawn(command: list[str], *, env: dict[str, str]) -> _FakeProcess:
+    def spawn(command: list[str], *, env: dict[str, str], **kwargs: Any) -> _FakeProcess:
         process = processes.pop(0)
-        calls.append({"command": command, "env": env, "process": process})
+        calls.append({"command": command, "env": env, "process": process, "kwargs": kwargs})
         return process
 
     def prepare(*items: _FakeProcess) -> Any:
@@ -156,3 +157,58 @@ def test_uses_force_only_after_the_child_ignores_the_grace_period(spawner: Any) 
     assert run_supervised(["astra"], {}, spawn=spawn) == 9
     assert process.terminated is True
     assert process.killed is True
+
+
+# ── 停机事件与输出重定向（ADR 0030：桌面壳接管监督者）───
+
+
+def test_popen_kwargs_are_forwarded_to_the_child(spawner: Any) -> None:
+    """桌面壳靠它把子进程输出重定向到日志文件（GUI 场景没有控制台）。"""
+    prepare, calls = spawner
+    spawn = prepare(_FakeProcess(0))
+
+    run_supervised(["astra"], {}, spawn=spawn, popen_kwargs={"stdout": "log", "stderr": "log"})
+
+    assert calls[0]["kwargs"] == {"stdout": "log", "stderr": "log"}
+
+
+def test_stop_set_before_the_child_exits_prevents_a_restart(spawner: Any) -> None:
+    """停机请求置位后，**哪怕子进程带着 75 退出也不再拉起**（ADR 0030 §1）。"""
+    prepare, calls = spawner
+    stop = threading.Event()
+    stop.set()
+    spawn = prepare(_FakeProcess(EXIT_RESTART))
+
+    assert run_supervised(["astra"], {}, stop=stop, spawn=spawn) == EXIT_RESTART
+    assert len(calls) == 1
+
+
+def test_stop_during_the_wait_terminates_the_child(spawner: Any) -> None:
+    """停机请求在等待期间到达 → terminate → 返回它的退出码，不再重启。"""
+    prepare, calls = spawner
+    stop = threading.Event()
+
+    class _SlowProcess(_FakeProcess):
+        """第一次等待期间"用户点了退出"，同时按剧本抛超时。"""
+
+        def wait(self, timeout: float | None = None) -> int:
+            stop.set()
+            return super().wait(timeout=timeout)
+
+    process = _SlowProcess(subprocess.TimeoutExpired("astra", 0.5), 17)
+    spawn = prepare(process)
+
+    assert run_supervised(["astra"], {}, stop=stop, spawn=spawn) == 17
+    assert process.terminated is True
+    assert process.killed is False
+    assert len(calls) == 1
+
+
+def test_without_a_stop_event_the_wait_path_is_unchanged(spawner: Any) -> None:
+    """``stop=None``（``astra serve`` 的路径）不进入轮询循环——行为与从前一致。"""
+    prepare, _ = spawner
+    process = _FakeProcess(0)
+    spawn = prepare(process)
+
+    assert run_supervised(["astra"], {}, spawn=spawn) == 0
+    assert process.terminated is False

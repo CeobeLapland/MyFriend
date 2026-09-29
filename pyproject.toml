@@ -7,8 +7,11 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "fastapi>=0.141.1",
     "httpx>=0.28.1",
+    "pillow>=12.3.0",
     "pydantic>=2.13.5",
     "pydantic-settings>=2.15.0",
+    "pystray>=0.19.5",
+    "pywebview>=6.2.1",
     "sqlite-vec>=0.1.9",
     "uvicorn>=0.53.0",
     "websockets>=17.1",
@@ -100,6 +103,12 @@ warn_required_dynamic_aliases = true
 # 只在基础设施层用到，用 override 比维护一份 stub 更划算。
 [[tool.mypy.overrides]]
 module = ["sqlite_vec"]
+ignore_missing_imports = true
+
+# 桌面壳的两个 GUI 包没有分发 py.typed（ADR 0030）。它们只在 astra/desktop 里用，
+# 而且与后端逻辑隔离——自己写 stub 只会复述几个签名，不划算。
+[[tool.mypy.overrides]]
+module = ["webview", "pystray", "PIL", "PIL.*"]
 ignore_missing_imports = true
 
 # ── pytest ──────────────────────────────────────────────

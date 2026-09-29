@@ -2,6 +2,7 @@
 
 astra serve            启动 HTTP 服务（默认以监督进程运行，支持"一键重启"）
 astra serve --no-supervisor   前台单进程运行（没有重启能力）
+astra desktop          桌面应用：独立窗口 + 托盘 + 自带后端（ADR 0030）
 astra migrate          应用数据库迁移（幂等）
 astra chat [--once X]  连上 WebSocket 聊天（REPL 或单轮）
 """
@@ -56,6 +57,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         help="前台单进程运行：没有'一键重启'能力（供脚本、或自己当监督者的桌面壳使用）",
     )
     subparsers.add_parser("migrate", help="应用数据库迁移（幂等）")
+    subparsers.add_parser("desktop", help="桌面应用：独立窗口 + 托盘 + 自带后端（ADR 0030）")
 
     chat_parser = subparsers.add_parser("chat", help="连上 WebSocket 聊天")
     chat_parser.add_argument("--once", metavar="TEXT", help="只发一轮然后退出（脚本化验收用）")
@@ -67,6 +69,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _migrate(settings)
     if args.command == "chat":
         return _chat(settings, once=args.once)
+    if args.command == "desktop":
+        return _desktop(settings)
     return _serve(settings, supervised=not args.no_supervisor)
 
 
@@ -101,6 +105,19 @@ def _serve(settings: Settings, *, supervised: bool = True) -> int:
         return run_supervised(child_command(), {**os.environ, SUPERVISED_ENV: "1"})
 
     return _serve_foreground(settings)
+
+
+def _desktop(settings: Settings) -> int:
+    """桌面应用入口（ADR 0030）。
+
+    **pywebview / pystray 只在这里的延迟导入里出现**：``astra serve`` 与
+    ``astra chat`` 的依赖面不因为 GUI 变大（有守门测试钉住）。
+    """
+    _setup_logging(settings)
+
+    from astra.desktop.app import run_desktop
+
+    return run_desktop(settings)
 
 
 def _serve_foreground(settings: Settings) -> int:

@@ -8,7 +8,9 @@ Ctrl+C 还管用、日志还看得到、没有孤儿进程"的做法。
 **子进程协议只有一个约定**：退出码 :data:`EXIT_RESTART`（75，EX_TEMPFAIL）表示
 "请重启我"；其他任何退出码都表示"收摊"，父进程把它原样透传。
 
-阶段 4 的桌面壳天然就是监督者，届时接管这同一套协议即可。
+阶段 4 的桌面壳天然就是监督者，届时接管这同一套协议即可——ADR 0030 兑现了这一点：
+壳在自己的工作线程里跑 :func:`run_supervised`，用 ``stop`` 事件请求停机，
+用 ``popen_kwargs`` 把子进程的输出重定向到日志文件（GUI 场景没有控制台）。
 """
 
 from __future__ import annotations
@@ -17,7 +19,8 @@ import logging
 import os
 import subprocess
 import sys
-from collections.abc import Callable, Sequence
+import threading
+from collections.abc import Callable, Mapping, Sequence
 
 _logger = logging.getLogger("astra.supervisor")
 
@@ -32,6 +35,8 @@ SUPERVISED_ENV = "ASTRA_SUPERVISED"
 _SHUTDOWN_GRACE_S = 10.0
 #: 宽限期到了还不退，就 terminate / kill
 _KILL_GRACE_S = 5.0
+#: 有停机事件时的轮询间隔（只影响"停机请求多久被发现"，不影响正常路径）
+_STOP_POLL_S = 0.5
 
 
 def is_supervised() -> bool:
@@ -61,26 +66,45 @@ def run_supervised(
     command: Sequence[str],
     env: dict[str, str],
     *,
+    stop: threading.Event | None = None,
     spawn: Callable[..., subprocess.Popen[bytes]] = subprocess.Popen,
+    popen_kwargs: Mapping[str, object] | None = None,
 ) -> int:
     """反复拉起子进程，直到它不以 75 退出；返回最终要透传的退出码。
 
     ``spawn`` 只为测试注入，真实路径就是 :class:`subprocess.Popen`。
+    ``popen_kwargs`` 原样转给 ``Popen``（桌面壳用它重定向子进程输出，ADR 0030）。
+    ``stop`` 给定时的语义：**停机请求一旦置位，就停掉子进程并返回，不再重启**
+    （哪怕它是带着 75 退出的）——``stop is None`` 时行为与从前逐行相同。
     """
     while True:
-        process = spawn(list(command), env=env)  # 固定参数，无 shell
-        code = _await_child(process)
+        process = spawn(list(command), env=env, **(dict(popen_kwargs) if popen_kwargs else {}))
+        code = _await_child(process, stop)
+        if stop is not None and stop.is_set():
+            _logger.info("收到停机请求，不再拉起后端", extra={"event": "serve.stopped"})
+            return code
         if not should_restart(code):
             return code
         _logger.warning("收到重启请求，正在重启后端", extra={"event": "serve.restarting"})
 
 
-def _await_child(process: subprocess.Popen[bytes]) -> int:
-    """等子进程退出；用户按 Ctrl+C 时先让它体面退出。
+def _await_child(process: subprocess.Popen[bytes], stop: threading.Event | None = None) -> int:
+    """等子进程退出。
 
+    ``stop is None``（``astra serve`` 的路径）：用户按 Ctrl+C 时先让它体面退出。
     同一控制台里的 Ctrl+C 会**同时**送到父子两个进程，所以这里不转发信号，只是等——
     子进程（uvicorn）自己会走优雅关闭。宽限期过后才 terminate / kill。
+
+    给了 ``stop``（桌面壳的路径）：轮询式等待，置位时走 :func:`_stop_child`。
     """
+    if stop is not None:
+        while True:
+            try:
+                return process.wait(timeout=_STOP_POLL_S)
+            except subprocess.TimeoutExpired:
+                if stop.is_set():
+                    return _stop_child(process)
+
     try:
         return process.wait()
     except KeyboardInterrupt:
@@ -90,9 +114,29 @@ def _await_child(process: subprocess.Popen[bytes]) -> int:
         return process.wait(timeout=_SHUTDOWN_GRACE_S)
     except subprocess.TimeoutExpired:
         _logger.warning("后端没在宽限期内退出，强制结束", extra={"event": "serve.killed"})
-        process.terminate()
-        try:
-            return process.wait(timeout=_KILL_GRACE_S)
-        except subprocess.TimeoutExpired:
-            process.kill()
-            return process.wait()
+        return _force_kill(process)
+
+
+def _stop_child(process: subprocess.Popen[bytes]) -> int:
+    """桌面壳退出时停掉后端：terminate → 宽限 → kill。
+
+    **为什么第一版用 terminate 而不是 Ctrl+Break**：Ctrl+Break 要发给同一个控制台
+    进程组，而 GUI 壳自己没有控制台（``GenerateConsoleCtrlEvent`` 发不出去）。
+    后端没有需要"优雅收尾"的持久状态——SQLite 每个操作一连接、落库是事务；
+    而"重启"那条路径本来是优雅的（退出码 75 走 uvicorn 自己的 shutdown）。
+    """
+    process.terminate()
+    try:
+        return process.wait(timeout=_SHUTDOWN_GRACE_S)
+    except subprocess.TimeoutExpired:
+        _logger.warning("后端没在宽限期内退出，强制结束", extra={"event": "serve.killed"})
+        return _force_kill(process)
+
+
+def _force_kill(process: subprocess.Popen[bytes]) -> int:
+    process.terminate()
+    try:
+        return process.wait(timeout=_KILL_GRACE_S)
+    except subprocess.TimeoutExpired:
+        process.kill()
+        return process.wait()
