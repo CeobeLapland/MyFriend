@@ -81,9 +81,12 @@ def test_whitelist_only_contains_real_settings_keys() -> None:
     assert set(_WHITELIST) <= _KNOWN_KEYS
 
 
-def test_whitelist_excludes_secrets() -> None:
-    """API key 不进 UI、不回显。"""
-    assert not any("API_KEY" in key for key in _WHITELIST)
+def test_whitelist_covers_every_provider_and_secret_key() -> None:
+    """新增 provider 时最容易漏掉的就是这两类键：枚举值本身与密钥（ADR 0032）。"""
+    assert "ASTRA_LLM_PROVIDER" in _WHITELIST
+    assert "ASTRA_STT_PROVIDER" in _WHITELIST
+    assert "ASTRA_TTS_PROVIDER" in _WHITELIST
+    assert {"ASTRA_LLM_API_KEY", "ASTRA_STT_API_KEY", "ASTRA_TTS_API_KEY"} <= set(_WHITELIST)
 
 
 # ── 读 ──────────────────────────────────────────────────
@@ -112,7 +115,7 @@ def test_read_derives_enum_choices_from_settings(admin_client: TestClient) -> No
     field = _field(admin_client, "ASTRA_LLM_PROVIDER")
 
     assert field["kind"] == "enum"
-    assert field["choices"] == ["none", "lmstudio"]
+    assert field["choices"] == ["none", "lmstudio", "openai_compatible"]
 
 
 def test_read_reports_unknown_keys_in_the_file(admin_client: TestClient, tmp_path: Path) -> None:
@@ -240,3 +243,51 @@ def test_write_is_not_in_the_openapi_paths_of_config(admin_client: TestClient) -
     assert "fields" not in body
     paths = admin_client.get("/openapi.json").json()["paths"]
     assert "/v1/admin/config" in paths
+
+
+# ── 密钥：只写不读（ADR 0032）────────────────────────────
+
+
+def test_secret_fields_never_echo_their_value(admin_client: TestClient) -> None:
+    """读接口里不可能出现密钥明文——连默认值都不回显。"""
+    field = _field(admin_client, "ASTRA_LLM_API_KEY")
+
+    assert field["kind"] == "secret"
+    assert field["value"] == ""
+    assert field["default"] is None
+    assert field["effective"] in {"已配置", "未配置"}
+    assert "lm-studio-local" not in str(field)
+
+
+def test_blank_secret_is_not_written(admin_client: TestClient, tmp_path: Path) -> None:
+    """留空 = 不改动。否则每次保存都会把已配好的密钥清成空串。"""
+    admin_client.put("/v1/admin/config", json={"values": {"ASTRA_LLM_API_KEY": "sk-real"}})
+    before = (tmp_path / ".env").read_text(encoding="utf-8")
+
+    response = admin_client.put(
+        "/v1/admin/config",
+        json={"values": {"ASTRA_LLM_API_KEY": "   ", "ASTRA_LLM_MODEL": "model-b"}},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["written"] == ["ASTRA_LLM_MODEL"]
+    after = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "ASTRA_LLM_API_KEY=sk-real" in after
+    assert before != after  # 只有模型那一行变了
+
+
+def test_only_blank_secrets_is_an_empty_update(admin_client: TestClient) -> None:
+    response = admin_client.put("/v1/admin/config", json={"values": {"ASTRA_STT_API_KEY": " "}})
+
+    assert response.status_code == 400
+    assert response.json()["detail"]["code"] == "empty_update"
+
+
+def test_non_secret_blank_still_clears_the_value(admin_client: TestClient, tmp_path: Path) -> None:
+    """非密钥键的留空照旧是"真的清空"——两者语义不同，不能一起改。"""
+    response = admin_client.put(
+        "/v1/admin/config", json={"values": {"ASTRA_TTS_REFERENCE_AUDIO": ""}}
+    )
+
+    assert response.status_code == 200
+    assert response.json()["written"] == ["ASTRA_TTS_REFERENCE_AUDIO"]

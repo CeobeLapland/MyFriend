@@ -7,6 +7,7 @@ requires-python = ">=3.12,<3.13"
 dependencies = [
     "fastapi>=0.141.1",
     "httpx>=0.28.1",
+    "miniaudio>=1.71",
     "pillow>=12.3.0",
     "pydantic>=2.13.5",
     "pydantic-settings>=2.15.0",
@@ -103,6 +104,13 @@ warn_required_dynamic_aliases = true
 # 只在基础设施层用到，用 override 比维护一份 stub 更划算。
 [[tool.mypy.overrides]]
 module = ["sqlite_vec"]
+ignore_missing_imports = true
+
+# miniaudio 没有分发 py.typed。它只在 infrastructure/audio/codec.py 里被**延迟**
+# import，用来解第三方 TTS 返回的 mp3 / opus。上游是单头 C 解码器的 cffi 绑定，
+# 自己写 stub 只会复述 decode() 的几个属性。
+[[tool.mypy.overrides]]
+module = ["miniaudio"]
 ignore_missing_imports = true
 
 # 桌面壳的两个 GUI 包没有分发 py.typed（ADR 0030）。它们只在 astra/desktop 里用，

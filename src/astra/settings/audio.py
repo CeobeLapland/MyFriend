@@ -18,11 +18,14 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 
 from astra.settings.base import blank_to_none
 
-AudioProviderName = Literal["none", "cosyvoice"]
+#: ``openai_compatible`` = 任何 OpenAI 兼容的第三方语音服务（``/audio/transcriptions``
+#: 与 ``/audio/speech``）。它与 ``cosyvoice`` 的差别不只是地址：那是**两个独立服务**
+#: （见 ``stt_base_url``），而且第三方 TTS 常返回 mp3/opus 而非 WAV。
+AudioProviderName = Literal["none", "cosyvoice", "openai_compatible"]
 
 
 class AudioSettingsMixin:
@@ -51,6 +54,35 @@ class AudioSettingsMixin:
     #: 首次调用含模型加载（实测 TTS 冷启 ~5 s、STT 冷启 ~4.9 s），别设太紧。
     tts_timeout_s: float = Field(default=120.0, gt=0)
     stt_timeout_s: float = Field(default=120.0, gt=0)
+
+    # ── openai_compatible 的地址与密钥 ──────────────────
+    #: **STT 后端地址，只被 openai_compatible 读取。**
+    #: cosyvoice 的 STT 与 TTS 是同一个 Gradio 进程，所以那条路继续共用
+    #: ``tts_base_url``——把它的地址拆出来会让老配置（改过 tts_base_url 的）
+    #: 静默走错端口。第三方 STT 则几乎不可能是同一个服务，所以它有自己的地址。
+    stt_base_url: str = "https://api.openai.com/v1"
+    #: STT 模型名（OpenAI 兼容的 ``/audio/transcriptions`` 用 multipart 的 model 字段）。
+    stt_model: str = "whisper-1"
+    #: 识别语言提示（如 ``zh``）。留空 = 让后端自己判。
+    stt_language: str | None = None
+    #: STT 密钥。CosyVoice 是本地 Gradio，不需要它。
+    stt_api_key: SecretStr = SecretStr("")
+
+    #: TTS 模型名（OpenAI 兼容的 ``/audio/speech``）。
+    tts_model: str = "tts-1"
+    #: 请求后端返回的音频格式。**默认 wav**：WAV 自带采样率，对"任何兼容服务"
+    #: 都成立；``pcm`` 是裸流，拿到它就必须按下面的 ``tts_pcm_sample_rate`` 解释
+    #: （OpenAI 的 pcm 是 24 kHz / 16-bit / 单声道）。``mp3`` 由
+    #: ``infrastructure.audio.codec`` 解码。
+    #:
+    #: **没有 opus 一档**：内置解码器（miniaudio）只认 WAV/FLAC/MP3/Vorbis，
+    #: 收下 opus 就必然解不出来。给一个做不到的选项比不给更糟。
+    tts_response_format: Literal["wav", "pcm", "mp3"] = "wav"
+    #: **只在 ``tts_response_format=pcm`` 时有意义**——裸流不带采样率，
+    #: 而第三方各家不一致（OpenAI 是 24000）。其余格式从容器里读。
+    tts_pcm_sample_rate: int = Field(default=24000, gt=0)
+    #: TTS 密钥。CosyVoice 是本地 Gradio，不需要它。
+    tts_api_key: SecretStr = SecretStr("")
 
     # ── 音频格式 ────────────────────────────────────────
     #: 客户端采集格式。16 kHz 单声道 int16 是 SenseVoice 的输入惯例。
@@ -83,4 +115,10 @@ class AudioSettingsMixin:
     @classmethod
     def _blank_reference_to_none(cls, value: object) -> object:
         """``ASTRA_TTS_REFERENCE_AUDIO=`` 表示"不启用 zero-shot"，不是"当前目录"。"""
+        return blank_to_none(value)
+
+    @field_validator("stt_language", mode="before")
+    @classmethod
+    def _blank_language_to_none(cls, value: object) -> object:
+        """``ASTRA_STT_LANGUAGE=`` 表示"让后端自己判语种"，不是空语言标签。"""
         return blank_to_none(value)

@@ -1743,6 +1743,15 @@ function configControl(field) {
     control.type = "number";
     control.step = field.kind === "float" ? "any" : "1";
     control.value = field.value;
+  } else if (field.kind === "secret") {
+    // 密钥**只写不读**：后端从不回显明文，所以这里永远是空的，
+    // 留空保存 = 不改动（后端也按这个语义处理）。
+    control = node("input");
+    control.type = "password";
+    control.value = "";
+    control.placeholder = "留空表示不修改";
+    control.autocomplete = "new-password";
+    control.spellcheck = false;
   } else {
     control = node("input");
     control.type = "text";
@@ -1777,6 +1786,9 @@ function configRow(field) {
   } else if (field.restart_pending) {
     row.appendChild(node("p", "cfg-hint",
       "当前生效值 " + field.effective + "，重启后才会换成上面这个值。"));
+  } else if (field.kind === "secret") {
+    row.appendChild(node("p", "cfg-hint",
+      "密钥只写不读：留空保存不会改动它。当前 " + field.effective + "。"));
   } else if (field.value !== field.effective) {
     row.appendChild(node("p", "cfg-hint", "当前生效值 " + field.effective));
   }
@@ -1859,6 +1871,8 @@ function collectChanges() {
     const raw = field.kind === "bool"
       ? (control.checked ? "true" : "false")
       : control.value.trim();
+    // 密钥留空 = 不改动（后端靠这条语义才不会把已配好的密钥清掉）
+    if (field.kind === "secret" && raw === "") continue;
     if (!sameValue(field.kind, raw, field.value)) changes[field.key] = raw;
   }
   return changes;

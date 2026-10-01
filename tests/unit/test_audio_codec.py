@@ -1,22 +1,30 @@
 """``astra.infrastructure.audio.codec`` 的测试。
 
-重点覆盖两件容易出错的事：
+重点覆盖三件容易出错的事：
 
 1. **float32 → int16 的削波**：CosyVoice 雨落版实际返回的就是 float32 WAV
    （实测 ``audioformat=3``），而 stdlib ``wave`` 读不了它。
 2. **RIFF 分块遍历**：真实文件里常夹着 ``LIST`` / ``fact`` 等 chunk，
    只按固定偏移读会读出噪声。
+3. **mp3 的按内容分派**（第三方 TTS）：声明 ``wav`` 却收到 mp3 时也必须能解，
+   而且**不能**让 miniaudio 用它的默认参数（44100 Hz 立体声）重采样。
 """
 
 from __future__ import annotations
 
 import struct
+from pathlib import Path
 
 import pytest
 
 from astra.domain.audio import AudioFormat
 from astra.domain.errors import AudioFormatError
-from astra.infrastructure.audio.codec import decode_wav, encode_wav
+from astra.infrastructure.audio.codec import decode_audio, decode_wav, encode_wav
+
+#: 一段 0.2 秒、440 Hz 正弦波的 mp3（1 KB）。用 ``lameenc`` 一次性生成：
+#: ``set_bit_rate(32)`` / ``set_in_sample_rate(24000)`` / ``set_channels(1)``；
+#: 实际落地为 22050 Hz 单声道（LAME 取最接近的合法采样率）。
+_MP3_FIXTURE = Path(__file__).resolve().parents[1] / "fixtures" / "tone_mono.mp3"
 
 
 def _float32_wav(samples: list[float], *, sample_rate: int = 24000, channels: int = 1) -> bytes:
@@ -184,3 +192,37 @@ def test_unsupported_bit_depth_is_rejected() -> None:
 
     with pytest.raises(AudioFormatError, match="unsupported WAV encoding"):
         decode_wav(blob)
+
+
+# ── decode_audio：按内容分派（WAV / mp3）─────────────────
+
+
+def test_decode_audio_sniffs_wav() -> None:
+    pcm = _pcm16(1, 2, 3, 4)
+    blob = encode_wav(pcm, AudioFormat(sample_rate=16000))
+
+    decoded = decode_audio(blob)
+
+    assert decoded.pcm == pcm
+    assert decoded.format.sample_rate == 16000
+
+
+def test_decode_audio_decodes_mp3_at_its_own_sample_rate() -> None:
+    """**不能**用 miniaudio 的默认参数：它会把 22050 单声道重采样成 44100 立体声
+    （实测采样数从 5760 涨到 23040），白白翻倍还改了音质。"""
+    decoded = decode_audio(_MP3_FIXTURE.read_bytes())
+
+    assert decoded.format.sample_rate == 22050
+    assert decoded.format.channels == 1
+    assert len(decoded.pcm) == 5760 * 2  # int16 → 两字节一个采样
+
+
+def test_decode_audio_rejects_garbage() -> None:
+    """既不是 WAV 也不是 mp3 → 稳定错误码，而不是抛 miniaudio 的异常。"""
+    with pytest.raises(AudioFormatError):
+        decode_audio(b"\x00" * 64)
+
+
+def test_decode_audio_rejects_empty_input() -> None:
+    with pytest.raises(AudioFormatError):
+        decode_audio(b"")

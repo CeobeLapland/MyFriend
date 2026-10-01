@@ -38,6 +38,8 @@ Local-first AI companion：长期记忆、稳定人格、实时语音、3D 形�
 > 想要更快的文本聊天，唯一干净的办法是**不用语音时关掉 CosyVoice 进程**、
 > 再把 LLM 放回 GPU。详见
 > [ADR 0022](docs/decisions/0022-audio-provider-boundary-and-vram.md)。
+> 不想跟显存较劲也可以把 LLM / 语音换成第三方 API——见
+> [接第三方 API](#接第三方-api云端-llm--语音)。
 
 `uv` 若不在 PATH，先补上（Windows）：
 
@@ -247,6 +249,46 @@ Invoke-RestMethod http://127.0.0.1:8000/health | ConvertTo-Json -Depth 4
 > 为什么端口是非流式的、为什么用纯 httpx 调 Gradio、为什么 LLM 要挪到 CPU——
 > 见 [ADR 0022](docs/decisions/0022-audio-provider-boundary-and-vram.md)；
 > 二进制帧协议见 [ADR 0021](docs/decisions/0021-audio-binary-frame-protocol.md)。
+
+## 接第三方 API（云端 LLM / 语音）
+
+本地跑不动时，LLM、STT、TTS 都可以换成**任何 OpenAI 兼容的第三方服务**——
+同一个 provider 值 `openai_compatible` 覆盖 OpenAI / DeepSeek / 通义兼容模式 /
+SiliconFlow 等（见 [ADR 0032](docs/decisions/0032-third-party-openai-compatible-providers.md)）。
+
+```powershell
+# 例：LLM 用云端，语音仍留在本地 cosyvoice
+$env:ASTRA_LLM_PROVIDER="openai_compatible"
+$env:ASTRA_LLM_BASE_URL="https://api.deepseek.com/v1"
+$env:ASTRA_LLM_API_KEY="sk-..."
+$env:ASTRA_LLM_MODEL="deepseek-chat"
+uv run astra serve
+```
+
+语音同理（`ASTRA_STT_PROVIDER` / `ASTRA_TTS_PROVIDER` 设成 `openai_compatible`，
+配 `ASTRA_STT_BASE_URL` / `ASTRA_TTS_MODEL` / `ASTRA_TTS_VOICE` 与各自的 API key）。
+
+要点：
+
+- **两个参数默认不发**：`reasoning_effort` 与 `response_format: json_schema` 多数
+  厂商不认识、会直接回 400，所以默认关（退化成 `json_object`）。确认厂商支持再把
+  `ASTRA_LLM_SEND_REASONING_EFFORT` / `ASTRA_LLM_USE_JSON_SCHEMA` 打开。
+  **这两个开关只影响 `openai_compatible`**——`lmstudio` 那条路照旧。
+- **密钥可以在 Studio 设置页里填**，也可以只写 `.env`。页面上的密钥**只写不读**：
+  读接口只回"已配置 / 未配置"，**留空保存表示不改动**（不会把已配好的密钥清掉）。
+- **TTS 默认请求 `wav`**（自带采样率）。厂商只给 `mp3` 也能用——内置解码器会按内容
+  识别。**没有 opus 一档**：内置解码器解不了它。
+- **换 TTS 后端要同时改 `ASTRA_TTS_VOICE`**：cosyvoice 填的是预设音色名
+  （「开拓者」），第三方填的是对方的音色 id（如 `alloy`）。cosyvoice 的
+  `ASTRA_TTS_REFERENCE_AUDIO` 音色克隆**不适用于第三方**。
+- **`/health` 的 stt / tts / llm 会真的去探**（`GET /models`）。语音探针不校验
+  模型名——很多厂商不把语音模型列进 `/models`。
+- **`ASTRA_TTS_BASE_URL` 现在是"TTS 后端地址"**，两个 provider 共用；STT 那边的
+  第三方地址是独立的 `ASTRA_STT_BASE_URL`（cosyvoice 的 STT/TTS 是同一个进程，
+  继续共用 `tts_base_url`）。
+
+> ⚠️ **隐私边界变了**：启用之后，对话内容、检索到的记忆文本、以及语音音频都会
+> **离开本机**发往该服务商。默认仍全部走本地。
 
 ## 形象（M5）
 
@@ -782,9 +824,12 @@ src/astra/
 ├─ application/         # 用例编排：orchestrator / conversation / prompt / parser / memory
 ├─ infrastructure/      # SQLite 仓储与迁移、人格 TOML 加载、音频编解码与 VAD
 └─ providers/
-   ├─ lmstudio/         # 唯一允许 import httpx 的地方（chat + embeddings）
-   └─ cosyvoice/        # 语音识别 / 合成（Gradio 后端，纯 httpx）
+   ├─ lmstudio/         # 本地 LM Studio（chat + embeddings）
+   ├─ cosyvoice/        # 本地语音识别 / 合成（Gradio 后端，纯 httpx）
+   └─ openai_compatible/# 第三方 OpenAI 兼容 API：LLM / STT / TTS（ADR 0032）
 ```
+
+`providers/**` 是唯一允许 import HTTP 客户端的地方。
 
 分层依赖方向为 `API -> Application -> Domain`，`Infrastructure` 实现 `Domain`
 中定义的端口。`src/astra/domain/**` 禁止 import `fastapi` / `sqlite3` /
@@ -809,6 +854,19 @@ src/astra/
 - **音频的 WebSocket 总线是全局广播**（不按 `session_id` 过滤），
   多客户端同时在线时都会收到音频；且队满时"淘汰最旧"可能丢掉音频中间帧
   （客户端可用 `tts.started.chunk_count` 自检）。见 ADR 0021。
+- **第三方 API 的两个参数开关是"用户声明"，不做校验**：`json_schema` 与
+  `reasoning_effort` 到底支不支持，只能由你按厂商文档判断。开错的表现是一轮对话
+  直接 `llm_unavailable`（HTTP 400），关错的表现是结构化输出变宽松。
+- **第三方 TTS 只支持 `wav` / `pcm` / `mp3`**：opus 解不了（内置解码器不支持）。
+  如果厂商**强制**返回 opus，这条路走不通。
+- **第三方 STT 不请求 `verbose_json`**，所以 `Transcript.language` 常常为空、
+  `confidence` 恒为空——为的是兼容那些连 `response_format` 都不认的服务。
+- **音色名不做跨厂商映射**：`ASTRA_TTS_VOICE` 原样发给后端。从 cosyvoice 换到第三方
+  时忘了改它，会得到"音色不存在"的后端错误。
+- **数据会出本机**：启用任何第三方 provider 后，对话、记忆文本与语音音频都会发往
+  该服务商。本地全离线是默认值，但一旦切换就不是了。
+- **embedding 没有第三方一档**：向量维度 `float[768]` 写在迁移 0003 里，换 1536 维的
+  云端 embedding 需要新迁移 + 重建索引。维度恰好是 768 的云端模型今天就能用。
 - **记忆让每轮多约 2.4 秒**。候选是随回复内联产出的（ADR 0018 的实测数据），
   换来的是"落库即持久"——否则说完立刻关程序会丢记忆。关掉
   `ASTRA_EMBEDDING_PROVIDER` 或 `PUT /v1/memories/settings {"enabled": false}`

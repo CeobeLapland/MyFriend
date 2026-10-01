@@ -44,7 +44,12 @@ from astra.application.orchestrator import Orchestrator, TurnConfig
 from astra.application.prompt_builder import PromptBudget
 from astra.application.state_service import StateConfig, StateService
 from astra.domain.errors import ConversationNotFoundError
-from astra.domain.health import DATABASE_COMPONENT, STT_COMPONENT, TTS_COMPONENT
+from astra.domain.health import (
+    DATABASE_COMPONENT,
+    LLM_COMPONENT,
+    STT_COMPONENT,
+    TTS_COMPONENT,
+)
 from astra.domain.persona import Persona
 from astra.domain.ports import EmbeddingProvider, HealthProbe, LLMProvider, STTProvider, TTSProvider
 from astra.infrastructure.db.conversation_repository import SQLiteConversationRepository
@@ -59,12 +64,17 @@ from astra.providers.cosyvoice.tts import CosyVoiceTTSProvider
 from astra.providers.lmstudio.client import LMStudioProvider
 from astra.providers.lmstudio.embeddings import LMStudioEmbeddingProvider
 from astra.providers.lmstudio.health import LMStudioHealthProbe
+from astra.providers.openai_compatible.health import OpenAICompatibleHealthProbe
+from astra.providers.openai_compatible.llm import OpenAICompatibleLLMProvider
+from astra.providers.openai_compatible.stt import OpenAICompatibleSTTProvider
+from astra.providers.openai_compatible.tts import OpenAICompatibleTTSProvider
 from astra.settings import Settings
 
 _logger = logging.getLogger(__name__)
 
 _LMSTUDIO = "lmstudio"
 _COSYVOICE = "cosyvoice"
+_OPENAI_COMPATIBLE = "openai_compatible"
 
 
 def create_app(
@@ -157,33 +167,65 @@ def _install_health(app: FastAPI, settings: Settings) -> None:
 
     # provider=none 时不注册探针，/health 保持 M0 的 not_configured（ADR 0006）。
     # **只改这些组件的值，不改 key 集合**——stt/tts 始终在 CANONICAL_COMPONENTS 里。
-    if settings.llm_provider == _LMSTUDIO:
-        probes.append(
-            LMStudioHealthProbe(
-                base_url=settings.llm_base_url,
-                model=settings.llm_model,
-                api_key=settings.llm_api_key.get_secret_value(),
-                timeout_s=settings.health_probe_timeout_s,
-            )
-        )
-
-    # STT 与 TTS 是同一个 Gradio 进程，探针逻辑共用，只是组件名不同
-    for component, provider_name in (
-        (STT_COMPONENT, settings.stt_provider),
-        (TTS_COMPONENT, settings.tts_provider),
+    for probe in (
+        _llm_probe(settings),
+        _audio_probe(settings, component=STT_COMPONENT, provider=settings.stt_provider),
+        _audio_probe(settings, component=TTS_COMPONENT, provider=settings.tts_provider),
     ):
-        if provider_name == _COSYVOICE:
-            probes.append(
-                CosyVoiceHealthProbe(
-                    component=component,
-                    base_url=settings.tts_base_url,
-                    timeout_s=settings.health_probe_timeout_s,
-                )
-            )
+        if probe is not None:
+            probes.append(probe)
 
     required = frozenset({DATABASE_COMPONENT}) if settings.health_db_required else frozenset()
 
     app.state.health_service = HealthService(probes, version=__version__, required=required)
+
+
+def _llm_probe(settings: Settings) -> HealthProbe | None:
+    if settings.llm_provider == _LMSTUDIO:
+        return LMStudioHealthProbe(
+            base_url=settings.llm_base_url,
+            model=settings.llm_model,
+            api_key=settings.llm_api_key.get_secret_value(),
+            timeout_s=settings.health_probe_timeout_s,
+        )
+
+    if settings.llm_provider == _OPENAI_COMPATIBLE:
+        return OpenAICompatibleHealthProbe(
+            component=LLM_COMPONENT,
+            base_url=settings.llm_base_url,
+            model=settings.llm_model,
+            api_key=settings.llm_api_key.get_secret_value(),
+            timeout_s=settings.health_probe_timeout_s,
+        )
+
+    return None
+
+
+def _audio_probe(settings: Settings, *, component: str, provider: str) -> HealthProbe | None:
+    """STT / TTS 的探针。
+
+    **地址按 provider 取**：cosyvoice 的 STT 与 TTS 是同一个 Gradio 进程，共用
+    ``tts_base_url``；第三方则是两个独立服务，STT 有自己的 ``stt_base_url``。
+    第三方那边**不校验模型名**（``model=None``）——很多兼容厂商不把语音模型列进
+    ``/models``，拿它当依据会把"其实能用"报成降级。
+    """
+    if provider == _COSYVOICE:
+        return CosyVoiceHealthProbe(
+            component=component,
+            base_url=settings.tts_base_url,
+            timeout_s=settings.health_probe_timeout_s,
+        )
+
+    if provider == _OPENAI_COMPATIBLE:
+        is_stt = component == STT_COMPONENT
+        return OpenAICompatibleHealthProbe(
+            component=component,
+            base_url=settings.stt_base_url if is_stt else settings.tts_base_url,
+            api_key=(settings.stt_api_key if is_stt else settings.tts_api_key).get_secret_value(),
+            timeout_s=settings.health_probe_timeout_s,
+        )
+
+    return None
 
 
 def _install_conversation_stack(
@@ -250,6 +292,16 @@ def _install_conversation_stack(
 
 def _build_tts_provider(settings: Settings) -> TTSProvider | None:
     """``tts_provider=none`` 时返回 ``None``——语音输出整体缺席，文本照常。"""
+    if settings.tts_provider == _OPENAI_COMPATIBLE:
+        return OpenAICompatibleTTSProvider(
+            base_url=settings.tts_base_url,
+            model=settings.tts_model,
+            api_key=settings.tts_api_key.get_secret_value(),
+            timeout_s=settings.tts_timeout_s,
+            response_format=settings.tts_response_format,
+            pcm_sample_rate=settings.tts_pcm_sample_rate,
+        )
+
     if settings.tts_provider != _COSYVOICE:
         return None
 
@@ -263,6 +315,15 @@ def _build_tts_provider(settings: Settings) -> TTSProvider | None:
 
 def _build_stt_provider(settings: Settings) -> STTProvider | None:
     """``stt_provider=none`` 时返回 ``None``——键盘输入仍然可用（`docs/01` §3）。"""
+    if settings.stt_provider == _OPENAI_COMPATIBLE:
+        return OpenAICompatibleSTTProvider(
+            base_url=settings.stt_base_url,
+            model=settings.stt_model,
+            api_key=settings.stt_api_key.get_secret_value(),
+            timeout_s=settings.stt_timeout_s,
+            language=settings.stt_language,
+        )
+
     if settings.stt_provider != _COSYVOICE:
         return None
 
@@ -336,6 +397,22 @@ def _build_memory_service(
 
 
 def _build_llm_provider(settings: Settings) -> LLMProvider | None:
+    if settings.llm_provider == _OPENAI_COMPATIBLE:
+        # 两个能力开关默认都关：多数第三方厂商对不认识的参数直接 400。
+        # 它们只在**这条路径**上生效——lmstudio 的能力是本地实测出来的已知事实，
+        # 不通过配置暴露（见 settings/llm.py 的字段注释）。
+        return OpenAICompatibleLLMProvider(
+            base_url=settings.llm_base_url,
+            model=settings.llm_model,
+            api_key=settings.llm_api_key.get_secret_value(),
+            connect_timeout_s=settings.llm_connect_timeout_s,
+            request_timeout_s=settings.llm_request_timeout_s,
+            default_max_tokens=settings.llm_max_tokens,
+            default_temperature=settings.llm_temperature,
+            send_reasoning_effort=settings.llm_send_reasoning_effort,
+            use_json_schema=settings.llm_use_json_schema,
+        )
+
     if settings.llm_provider != _LMSTUDIO:
         return None
 
@@ -360,7 +437,7 @@ def _build_embedding_provider(settings: Settings) -> EmbeddingProvider | None:
         base_url=settings.embedding_base_url,
         model=settings.embedding_model,
         dim=settings.embedding_dim,
-        api_key=settings.llm_api_key.get_secret_value(),
+        api_key=settings.embedding_api_key.get_secret_value(),
         connect_timeout_s=settings.llm_connect_timeout_s,
         request_timeout_s=settings.embedding_timeout_s,
     )
