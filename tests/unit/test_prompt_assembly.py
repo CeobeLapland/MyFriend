@@ -194,3 +194,90 @@ def test_system_prompt_is_stable_across_calls(persona) -> None:
     second = build_conversation_context(persona, history=(), user_text="b", budget=budget)
 
     assert first.system_prompt == second.system_prompt
+
+
+# ── 降级轮次不进上下文 ──────────────────────────────────
+
+
+def _failed_message(index: int, *, turn_id: str, content: str) -> Message:
+    return Message(
+        id=f"01{index:04d}",
+        conversation_id="01CONV",
+        turn_id=turn_id,
+        role=Role.ASSISTANT,
+        content=content,
+        created_at=_NOW,
+        metadata={"status": "failed", "error_code": "llm_unavailable"},
+    )
+
+
+def _user_message(index: int, *, turn_id: str, content: str) -> Message:
+    return Message(
+        id=f"01{index:04d}",
+        conversation_id="01CONV",
+        turn_id=turn_id,
+        role=Role.USER,
+        content=content,
+        created_at=_NOW,
+    )
+
+
+def test_failed_turn_is_dropped_whole(persona) -> None:
+    """故障那一轮的**两条**都不进上下文——降级回复是噪音，悬空提问也是。"""
+    history = [
+        _user_message(0, turn_id="T1", content="在吗"),
+        _failed_message(1, turn_id="T1", content="我这边的模型服务连不上了。"),
+    ]
+
+    context = build_conversation_context(
+        persona, history=history, user_text="现在呢", budget=PromptBudget(20, 12000)
+    )
+
+    assert [message.content for message in context.messages] == ["现在呢"]
+
+
+def test_successful_turns_around_a_failure_are_kept(persona) -> None:
+    history = [
+        _user_message(0, turn_id="T1", content="第一句"),
+        _failed_message(1, turn_id="T1", content="连不上了"),
+        _user_message(2, turn_id="T2", content="第二句"),
+        Message(
+            id="010003",
+            conversation_id="01CONV",
+            turn_id="T2",
+            role=Role.ASSISTANT,
+            content="第二句的回复",
+            created_at=_NOW,
+            metadata={"status": "ok", "model": "x"},
+        ),
+    ]
+
+    context = build_conversation_context(
+        persona, history=history, user_text="第三句", budget=PromptBudget(20, 12000)
+    )
+
+    assert [message.content for message in context.messages] == [
+        "第二句",
+        "第二句的回复",
+        "第三句",
+    ]
+
+
+def test_messages_without_a_status_are_kept(persona) -> None:
+    """M1 时代写下的消息没有 status 字段——缺省视为正常，不作剔除。"""
+    history = [
+        Message(
+            id="010000",
+            conversation_id="01CONV",
+            turn_id="T1",
+            role=Role.ASSISTANT,
+            content="老消息",
+            created_at=_NOW,
+        )
+    ]
+
+    context = build_conversation_context(
+        persona, history=history, user_text="新消息", budget=PromptBudget(20, 12000)
+    )
+
+    assert [message.content for message in context.messages] == ["老消息", "新消息"]

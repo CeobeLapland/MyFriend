@@ -264,6 +264,9 @@ class MemoryService:
     ) -> tuple[Memory, ...]:
         """把一轮对话提取出的候选落库（去重 / 合并 / 打分 / 向量化）。
 
+        **向量化是一次批量请求**（全部候选一起送），不是每条一次——第三方
+        embedding 按请求计价，一轮最多 3 条候选就是最多 3 次计费。
+
         返回本次**新建**的记忆（合并到既有的不算），供 Orchestrator 计数与发布事件。
         """
         if self._embeddings is None or not candidates:
@@ -282,6 +285,9 @@ class MemoryService:
 
         moment = now if now is not None else self._clock()
         selected = tuple(candidates)[: self._config.max_candidates_per_turn]
+        if not selected:
+            return ()
+
         if len(selected) < len(candidates):
             _logger.info(
                 "truncated memory candidates",
@@ -292,11 +298,35 @@ class MemoryService:
                 },
             )
 
+        # **一次请求向量化全部候选**（原先每条一次）。这不只是省往返：第三方
+        # embedding 按请求计价，一轮最多 3 条候选意味着最多 3 次计费。
+        try:
+            vectors = await self._embeddings.embed([candidate.content for candidate in selected])
+        except AstraError as exc:
+            self._log_failure("ingest.embed", exc)
+            return ()
+
+        if len(vectors) != len(selected):
+            # 数量对不上就无法把向量与候选对应起来——静默错位会写错记忆
+            _logger.warning(
+                "embedding provider returned a mismatched number of vectors",
+                extra={
+                    "event": "memory.failed",
+                    "detail": {
+                        "stage": "ingest.embed",
+                        "expected": len(selected),
+                        "got": len(vectors),
+                    },
+                },
+            )
+            return ()
+
         created: list[Memory] = []
-        for candidate in selected:
+        for candidate, vector in zip(selected, vectors, strict=True):
             try:
                 stored = await self._ingest_one(
                     candidate,
+                    vector,
                     user_text=user_text,
                     source_message_id=source_message_id,
                     correlation_id=correlation_id,
@@ -314,18 +344,14 @@ class MemoryService:
     async def _ingest_one(
         self,
         candidate: MemoryCandidate,
+        vector: Sequence[float],
         *,
         user_text: str,
         source_message_id: str | None,
         correlation_id: str | None,
         now: datetime,
     ) -> Memory | None:
-        assert self._embeddings is not None  # noqa: S101 - 调用方已判空
-        vectors = await self._embeddings.embed([candidate.content])
-        if not vectors:
-            return None
-        vector = vectors[0]
-
+        """落库**一条**候选。向量由调用方批量算好传进来（见 :meth:`ingest_candidates`）。"""
         existing = await self._find_duplicate(vector, now)
         if existing is not None:
             await self._merge(existing, candidate, vector=vector, now=now)

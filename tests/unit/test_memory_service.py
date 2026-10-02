@@ -148,6 +148,24 @@ def test_ingest_records_provenance(service: MemoryService) -> None:
     assert created[0].metadata["correlation_id"] == "turn-1"
 
 
+def test_candidates_are_embedded_in_one_request(
+    service: MemoryService, embeddings: FakeEmbeddingProvider
+) -> None:
+    """一轮的候选**一次**送进 embedding（原先一条一次）。
+
+    这不只是省往返——第三方 embedding 按请求计价，一轮三条候选就是三次计费。
+    """
+    created = _run(
+        service.ingest_candidates(
+            [_candidate(_SIMILAR_A), _candidate(_CAT), _candidate(_PROJECT)],
+            user_text="随便聊几句",
+        )
+    )
+
+    assert len(created) == 3
+    assert embeddings.calls == [(_SIMILAR_A, _CAT, _PROJECT)]
+
+
 def test_similar_candidates_are_merged_not_duplicated(service: MemoryService) -> None:
     """docs/06 §6：相似度超阈值必须 merge，不能创建两条互不相关的记忆。"""
     first = _run(service.ingest_candidates([_candidate(_SIMILAR_A)], user_text=_SIMILAR_A))
@@ -448,9 +466,17 @@ def test_custom_weights_are_honoured(store: SQLiteMemoryStore) -> None:
 
 
 def test_list_returns_only_retrievable_by_default(service: MemoryService) -> None:
+    """默认过滤条件只返回「当前可检索」的记忆。
+
+    **必须用不过期的类型**（PREFERENCE）：这里的 ``_NOW`` 是钉死的 2026-09-24，
+    而 ``MemoryStore.list`` 判过期用的是**真实时钟**（它没有 ``now`` 形参，
+    与 ``search_similar`` 不同）。用 EPISODIC（TTL 7 天）的话，这条记忆会在
+    真实时间走过 2026-10-01 之后变成"已过期"，测试就会在某个日历日突然变红。
+    过期过滤本身由 ``test_export_includes_archived_and_expired`` 覆盖。
+    """
     _run(
         service.ingest_candidates(
-            [_candidate("用户今天在复习数据库", MemoryType.EPISODIC)],
+            [_candidate("用户今天在复习数据库", MemoryType.PREFERENCE)],
             user_text="今天我在复习数据库",
         )
     )

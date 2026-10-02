@@ -20,6 +20,9 @@ from astra.domain.state import StateSnapshot
 #: 它们不是"当前对话"的一部分。
 _CONVERSATION_ROLES = frozenset({Role.USER, Role.ASSISTANT})
 
+#: 降级轮次在消息 metadata 里的标记（``Orchestrator._persist_failure`` 写的）。
+_FAILED_STATUS = "failed"
+
 
 @dataclass(frozen=True, slots=True)
 class PromptBudget:
@@ -69,6 +72,40 @@ def trim_history(messages: Sequence[Message], *, budget: PromptBudget) -> Histor
     return HistoryWindow(messages=tuple(kept), dropped=len(messages) - len(kept))
 
 
+def conversation_messages(messages: Sequence[Message]) -> tuple[Message, ...]:
+    """挑出该喂给 LLM 的历史，并**整轮剔除降级轮次**。
+
+    降级回复（"我这边的模型服务连不上了…"）是**故障的产物，不是对话内容**。
+    把它留在上下文里有两个坏处，都有实测或明确的机理：
+
+    1. **小模型会照抄**。README「已知限制」记录过一个真实故障：早期
+       ``llm_provider=none`` 产生的降级回复堆了十几条之后，nemotron-4B 开始
+       把"我现在还没有接上语言模型"当成自己的口头禅——因为它是上下文里出现
+       最频繁的 assistant 句子。
+    2. **内容经常是错的**。文案是按**当时的** ``ErrorCode`` 生成的，而它被写死在
+       ``Orchestrator.DEFAULT_ERROR_REPLIES`` 里指向 LM Studio（"你确认一下
+       LM Studio 在运行"）。换到第三方 LLM 之后，这句话既过时又误导。
+
+    **用户那一半也一起丢**：一次故障不该在上下文里留下"我问了但没人应"的悬空
+    提问——用户真在意就会再说一遍，而重复的提问比缺失的提问更干扰模型。
+    数据库里的记录**一条不少**（``docs/04`` 的持久化契约不变），这里只影响
+    送给 LLM 的那一份。
+    """
+    failed_turns = {
+        message.turn_id
+        for message in messages
+        if message.role is Role.ASSISTANT
+        # 早期（M1 之前）的消息没有 status：缺省视为正常，不作剔除
+        and message.metadata.get("status") == _FAILED_STATUS
+    }
+
+    return tuple(
+        message
+        for message in messages
+        if message.role in _CONVERSATION_ROLES and message.turn_id not in failed_turns
+    )
+
+
 def build_conversation_context(
     persona: Persona,
     *,
@@ -86,10 +123,7 @@ def build_conversation_context(
     "同一组输入产出逐字节相同的 prompt" 这条（`docs/10` §2）会依赖两份排序逻辑。
     ``state`` 是 ``StateService`` 读到的快照（已含惰性衰减）。
     """
-    window = trim_history(
-        [message for message in history if message.role in _CONVERSATION_ROLES],
-        budget=budget,
-    )
+    window = trim_history(conversation_messages(history), budget=budget)
 
     messages = [
         LLMMessage(role=message.role, content=message.content) for message in window.messages
